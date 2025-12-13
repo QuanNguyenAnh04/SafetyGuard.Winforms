@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36717.8
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SafetyGuard.WinForms", "SafetyGuard.Winforms\SafetyGuard.WinForms.csproj", "{B047D05B-1953-431A-BF6C-D6256AA1A5DD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B047D05B-1953-431A-BF6C-D6256AA1A5DD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B047D05B-1953-431A-BF6C-D6256AA1A5DD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B047D05B-1953-431A-BF6C-D6256AA1A5DD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B047D05B-1953-431A-BF6C-D6256AA1A5DD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {14FBA70C-4F1A-4DF8-960E-B532315FFA69}
+	EndGlobalSection
+EndGlobal
