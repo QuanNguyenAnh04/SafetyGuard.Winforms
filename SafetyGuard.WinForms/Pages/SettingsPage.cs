@@ -45,6 +45,8 @@ public sealed class SettingsPage : UserControl
     private Guna2TextBox _tbEvidenceRoot = null!;
     private Guna2ToggleSwitch _swSnapshot = null!;
     private Guna2ToggleSwitch _swClip = null!;
+    private TableLayoutPanel _centerLayout = null!;
+
 
     // debounce save for sliders
     private readonly Timer _saveDebounce = new() { Interval = 350 };
@@ -58,7 +60,32 @@ public sealed class SettingsPage : UserControl
         BackColor = AppColors.ContentBg;
 
         Controls.Add(_scroll);
-        _scroll.Controls.Add(_stack);
+        _centerLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+
+        // 50% - FIXED - 50%  (cột giữa sẽ set bằng FitCardsToWidth)
+        _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 980));
+        _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        _centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _scroll.Controls.Add(_centerLayout);
+
+        // ✅ Quan trọng: stack KHÔNG được Dock=Top vào scroll nữa
+        _stack.Dock = DockStyle.Top; // được, nhưng nằm trong cell giữa
+        _stack.Margin = Padding.Empty;
+
+        _centerLayout.Controls.Add(_stack, 1, 0);
+
 
         BuildHeader();
         BuildCameraManagement();
@@ -947,37 +974,41 @@ public sealed class SettingsPage : UserControl
 
     private void FitCardsToWidth()
     {
-        int max = 980;
+        if (_centerLayout == null) return;
 
-        // trừ padding của stack + scrollbar cho chắc
-        int usable = _scroll.ClientSize.Width
-                     - _stack.Padding.Left - _stack.Padding.Right
-                     - SystemInformation.VerticalScrollBarWidth - 8;
+        int max = 1100; // muốn rộng hơn thì tăng
+        int usable = _scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8;
 
-        int w = Math.Max(720, Math.Min(max, usable));
+        int w = Math.Max(720, Math.Min(max, usable - 40));
 
-        _stack.SuspendLayout();
+        // ✅ set cột giữa
+        _centerLayout.ColumnStyles[1].SizeType = SizeType.Absolute;
+        _centerLayout.ColumnStyles[1].Width = w;
+
+        // set width cho stack + cards
+        _stack.Width = w;
 
         foreach (Control c in _stack.Controls)
         {
             if (c is Guna2Panel gp)
             {
                 gp.Width = w;
-
-                // ✅ khóa width để AutoSize chỉ “grow theo chiều cao”, không co ngang thành pill
                 gp.MinimumSize = new Size(w, 0);
                 gp.MaximumSize = new Size(w, 0);
             }
-            else if (c is Panel p)
+            else
             {
-                p.Width = w;
+                c.Width = w;
             }
         }
 
-        _stack.ResumeLayout();
-
         ResizeCameraRows();
+
+        // refresh layout
+        _centerLayout.PerformLayout();
     }
+
+
 
 
     private static Guna2Panel CreateCard()
