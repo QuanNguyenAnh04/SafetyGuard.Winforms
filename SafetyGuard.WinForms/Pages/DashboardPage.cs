@@ -5,10 +5,10 @@ using System.Windows.Forms;
 using Guna.UI2.WinForms;
 using LiveChartsCore;
 using LiveChartsCore.SkiaSharpView;
-using SafetyGuard.WinForms.Models;
-using SafetyGuard.WinForms.Services;
-using SafetyGuard.WinForms.UI;
 using LiveChartsCore.SkiaSharpView.WinForms;
+using SafetyGuard.WinForms.Models;
+using SafetyGuard.WinForms.UI;
+using LiveChartsCore.Measure;
 
 
 namespace SafetyGuard.WinForms.Pages;
@@ -25,6 +25,10 @@ public sealed class DashboardPage : UserControl
     private CartesianChart _trend = null!;
     private PieChart _pie = null!;
 
+    // keep last data to re-apply on resize without recompute
+    private ISeries[] _trendSeries = Array.Empty<ISeries>();
+    private ISeries[] _pieSeries = Array.Empty<ISeries>();
+
     public DashboardPage(AppBootstrap app)
     {
         _app = app;
@@ -32,6 +36,7 @@ public sealed class DashboardPage : UserControl
         BackColor = AppColors.ContentBg;
 
         BuildUI();
+        ConfigureCharts();
         RefreshMetrics();
 
         _app.Violations.OnChanged += () => this.SafeInvoke(RefreshMetrics);
@@ -77,7 +82,7 @@ public sealed class DashboardPage : UserControl
             ColumnCount = 2,
             RowCount = 1,
             BackColor = Color.Transparent,
-            Margin = new Padding(0, 6, 0, 0)
+            Margin = new Padding(0, 12, 0, 0)
         };
         tblCharts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
         tblCharts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
@@ -92,6 +97,9 @@ public sealed class DashboardPage : UserControl
         cardPie.Dock = DockStyle.Fill;
         tblCharts.Controls.Add(cardPie, 1, 0);
         BuildPieCard(cardPie);
+
+        // ✅ force charts to re-layout when the page resizes (fix "drift")
+        Resize += (_, _) => ForceChartsLayout();
     }
 
     private Guna2ShadowPanel KpiCard(string title, out Label value, string sub, Color tint, string icon)
@@ -142,11 +150,11 @@ public sealed class DashboardPage : UserControl
 
     private void BuildTrendCard(Guna2ShadowPanel card)
     {
-        var header = new Panel { Dock = DockStyle.Top, Height = 40 };
+        var header = new Panel { Dock = DockStyle.Top, Height = 44 };
         card.Controls.Add(header);
 
         var lbl = ControlFactory.Title("7-Day Trends", 12, true);
-        lbl.Location = new Point(4, 8);
+        lbl.Location = new Point(4, 10);
         header.Controls.Add(lbl);
 
         var cb = new Guna2ComboBox
@@ -161,24 +169,91 @@ public sealed class DashboardPage : UserControl
         cb.Items.AddRange(new object[] { "Last 7 Days", "Last 30 Days" });
         cb.SelectedIndex = 0;
         header.Controls.Add(cb);
-        header.Resize += (_, _) => cb.Location = new Point(header.Width - cb.Width - 6, 4);
-        cb.Location = new Point(header.Width - cb.Width - 6, 4);
+        header.Resize += (_, _) => cb.Location = new Point(header.Width - cb.Width - 6, 6);
+        cb.Location = new Point(header.Width - cb.Width - 6, 6);
 
-        _trend = new CartesianChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        _trend = new CartesianChart
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent
+        };
         card.Controls.Add(_trend);
+
+        // ✅ important: update layout when chart itself resizes
+        _trend.SizeChanged += (_, _) => ForceChartsLayout();
     }
 
     private void BuildPieCard(Guna2ShadowPanel card)
     {
-        var header = new Panel { Dock = DockStyle.Top, Height = 40 };
+        var header = new Panel { Dock = DockStyle.Top, Height = 44 };
         card.Controls.Add(header);
 
         var lbl = ControlFactory.Title("Violation Types", 12, true);
-        lbl.Location = new Point(4, 8);
+        lbl.Location = new Point(4, 10);
         header.Controls.Add(lbl);
 
-        _pie = new PieChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        _pie = new PieChart
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent
+        };
         card.Controls.Add(_pie);
+
+        _pie.SizeChanged += (_, _) => ForceChartsLayout();
+    }
+
+    private void ConfigureCharts()
+    {
+        // ===== Trend chart layout =====
+        _trend.LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden;
+
+        _trend.XAxes = new Axis[]
+        {
+            new Axis
+            {
+                // keep labels tight
+                LabelsRotation = 0,
+                SeparatorsPaint = null,
+                TextSize = 12
+            }
+        };
+
+        _trend.YAxes = new Axis[]
+        {
+            new Axis
+            {
+                SeparatorsPaint = null,
+                TextSize = 12
+            }
+        };
+
+        // draw margin to prevent "floating" plot when resizing
+        _trend.DrawMargin = new LiveChartsCore.Measure.Margin(30, 10, 10, 30);
+        _trend.AnimationsSpeed = TimeSpan.FromMilliseconds(250);
+
+        // ===== Pie chart layout =====
+        _pie.LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden;
+        _pie.InitialRotation = -90;
+        _pie.AnimationsSpeed = TimeSpan.FromMilliseconds(250);
+
+        // give a bit padding so pie doesn't appear "stuck" to top-left when wide
+        _pie.Padding = new Padding(10);
+    }
+
+    private void ForceChartsLayout()
+    {
+        // Re-apply series (LiveCharts recalculates layout) + Update
+        if (_trend != null)
+        {
+            if (_trendSeries.Length > 0) _trend.Series = _trendSeries;
+            _trend.Update();
+        }
+
+        if (_pie != null)
+        {
+            if (_pieSeries.Length > 0) _pie.Series = _pieSeries;
+            _pie.Update();
+        }
     }
 
     private void RefreshMetrics()
@@ -192,7 +267,6 @@ public sealed class DashboardPage : UserControl
         var cams = _app.Settings.Current.Cameras.Count(c => c.Enabled);
         var totalToday = todayItems.Count;
 
-        // Safety rate = 100 - normalized violations (demo logic)
         var safetyRate = Math.Max(0, 100 - totalToday * 2);
 
         _kpiTotal.Text = totalToday.ToString();
@@ -204,10 +278,16 @@ public sealed class DashboardPage : UserControl
         var days = Enumerable.Range(0, 7).Select(i => today.AddDays(-6 + i)).ToList();
         var counts = days.Select(d => all.Count(v => v.TimeUtc.Date == d)).Select(x => (double)x).ToArray();
 
-        _trend.Series = new ISeries[]
+        _trendSeries = new ISeries[]
         {
-            new LineSeries<double> { Values = counts, GeometrySize = 10 }
+            new LineSeries<double>
+            {
+                Values = counts,
+                GeometrySize = 10,
+                Fill = null, // không fill để không bị “tràn” cảm giác lệch khi wide
+            }
         };
+        _trend.Series = _trendSeries;
 
         // pie by type (last 7 days)
         var start = today.AddDays(-6);
@@ -219,11 +299,15 @@ public sealed class DashboardPage : UserControl
 
         if (byType.Count == 0) byType.Add((ViolationType.NoHelmet, 1));
 
-        _pie.Series = byType.Select(x => new PieSeries<double>
+        _pieSeries = byType.Select(x => new PieSeries<double>
         {
             Values = new double[] { x.c },
             Name = x.t.ToString(),
             InnerRadius = 60
-        }).Cast<LiveChartsCore.ISeries>().ToArray();
+        }).Cast<ISeries>().ToArray();
+
+        _pie.Series = _pieSeries;
+
+        ForceChartsLayout();
     }
 }
