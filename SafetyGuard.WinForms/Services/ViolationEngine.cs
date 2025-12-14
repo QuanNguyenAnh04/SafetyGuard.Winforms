@@ -38,6 +38,7 @@ public sealed class ViolationEngine
         Bitmap currentFrameForEvidence,
         Detection[] detections)
     {
+        var now = DateTime.UtcNow;
         var s = _settings.Current;
 
         // filter by rules thresholds
@@ -67,14 +68,14 @@ public sealed class ViolationEngine
                 st.Consecutive++;
 
                 var ready = st.Consecutive >= s.MinConsecutiveFrames;
-                var cooldownOk = (DateTime.UtcNow - st.LastCreatedUtc).TotalSeconds >= s.CooldownSeconds;
+                var cooldownOk = (now - st.LastCreatedUtc).TotalSeconds >= s.CooldownSeconds;
 
                 if (ready && cooldownOk)
                 {
                     var rule = kv.Value;
                     var v = new ViolationRecord
                     {
-                        TimeUtc = DateTime.UtcNow,
+                        TimeUtc = now,
                         CameraId = cameraId,
                         CameraName = cameraName,
                         Type = type,
@@ -84,10 +85,14 @@ public sealed class ViolationEngine
                     };
 
                     // evidence
-                    v.SnapshotPath = _evidence.SaveSnapshot((Bitmap)currentFrameForEvidence.Clone(), v);
+                    using (var clone = (Bitmap)currentFrameForEvidence.Clone())
+                    {
+                        v.SnapshotPath = _evidence.SaveSnapshot(clone, v);
+                    }
                     v.ClipPath = _evidence.SaveClipPlaceholder(v);
 
-                    st.LastCreatedUtc = DateTime.UtcNow;
+
+                    st.LastCreatedUtc = now;
                     st.Consecutive = 0;
 
                     _repo.Add(v);

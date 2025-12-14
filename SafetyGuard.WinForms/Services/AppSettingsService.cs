@@ -22,11 +22,38 @@ public sealed class AppSettingsService
         Current = LoadOrCreate();
     }
 
+    private static void NormalizeRules(AppSettings s)
+    {
+        // 1) bỏ trùng theo Type (lấy rule cuối cùng)
+        s.Rules = s.Rules
+            .GroupBy(r => r.Type)
+            .Select(g => g.Last())
+            .ToList();
+
+        // 2) đảm bảo luôn có rule cho mọi ViolationType (đặc biệt khi bạn thêm enum mới)
+        foreach (var t in Enum.GetValues(typeof(ViolationType)).Cast<ViolationType>())
+        {
+            if (s.Rules.Any(r => r.Type == t)) continue;
+
+            s.Rules.Add(new DetectionRule
+            {
+                Type = t,
+                Enabled = true,
+                ConfidenceThreshold = t == ViolationType.Smoking ? 0.55f : 0.45f,
+                Level = t == ViolationType.Smoking ? ViolationLevel.Critical : ViolationLevel.Warning
+            });
+        }
+    }
+
+
 
     public void Save(AppSettings settings)
     {
         Current = settings;
         Directory.CreateDirectory(Path.GetDirectoryName(_paths.SettingsPath)!);
+
+        EnsureDefaults(settings);
+        NormalizeRules(settings);
 
         var json = JsonSerializer.Serialize(Current, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(_paths.SettingsPath, json);
@@ -44,6 +71,9 @@ public sealed class AppSettingsService
                 var json = File.ReadAllText(_paths.SettingsPath);
                 var s = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
                 EnsureDefaults(s);
+                if (string.IsNullOrWhiteSpace(s.EvidenceRoot))
+                    s.EvidenceRoot = _paths.EvidenceDir;
+
                 _logs.Info("Settings loaded.");
                 return s;
             }
@@ -61,6 +91,7 @@ public sealed class AppSettingsService
 
     private static void EnsureDefaults(AppSettings s)
     {
+
         if (s.Cameras.Count == 0)
         {
             // demo RTSP placeholders (user sửa trong Settings)
@@ -83,5 +114,7 @@ public sealed class AppSettingsService
                 })
                 .ToList();
         }
+        NormalizeRules(s);
+
     }
 }

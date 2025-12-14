@@ -40,8 +40,10 @@ public sealed class EvidenceService
             var dayDir = Path.Combine(root, DateTime.UtcNow.ToString("yyyyMMdd"));
             Directory.CreateDirectory(dayDir);
 
-            var file = $"{v.TimeUtc:HHmmss}_{v.CameraName}_{v.Type}_{v.Confidence:0.00}.jpg"
-                .Replace(" ", "_").Replace(":", "");
+            var safeCam = SanitizeFileName(v.CameraName);
+            var file = $"{v.TimeUtc:HHmmss_fff}_{safeCam}_{v.Type}_{v.Confidence:0.00}.jpg"
+                .Replace(" ", "_");
+
             var path = Path.Combine(dayDir, file);
 
             bmp.Save(path, System.Drawing.Imaging.ImageFormat.Jpeg);
@@ -62,4 +64,11 @@ public sealed class EvidenceService
         // TODO: implement ring-buffer + VideoWriter if cần.
         return null;
     }
+    private static string SanitizeFileName(string name)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return name;
+    }
+
 }

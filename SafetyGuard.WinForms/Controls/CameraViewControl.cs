@@ -16,6 +16,15 @@ public sealed class CameraViewControl : UserControl
 {
     private readonly AppBootstrap _app;
     private readonly CameraConfig _cam;
+    private readonly CameraRuntimeState _state;
+    private readonly System.Windows.Forms.Timer _watchdog = new() { Interval = 1000 };
+
+
+    private int _fpsCount;
+    private DateTime _fpsWindowStart = DateTime.MinValue;
+    private bool CanDetect => _detecting && _state.Status == CameraStatus.Connected;
+
+
 
     private FrameSourceBase? _source;
 
@@ -55,6 +64,12 @@ public sealed class CameraViewControl : UserControl
     {
         _app = app;
         _cam = cam;
+        _state = new CameraRuntimeState
+        {
+            CameraId = cam.Id,
+            CameraName = cam.Name,
+            Status = CameraStatus.Offline
+        };
 
         Dock = DockStyle.Fill;
         BackColor = Color.Black;
@@ -74,6 +89,9 @@ public sealed class CameraViewControl : UserControl
         Controls.Add(frame);
 
         frame.Controls.Add(_pic);
+        _pic.Controls.Add(_lblCenter);
+        _lblCenter.BringToFront();
+
 
         _lblOverlay.Text = $"{cam.Name}";
         _lblOverlay.Location = new Point(10, 10);
@@ -85,15 +103,40 @@ public sealed class CameraViewControl : UserControl
         };
         _pic.Controls.Add(_statusBadge);
 
+        _watchdog.Tick += (_, _) =>
+        {
+            if (_source == null) return;
+
+            // nếu hơn 3s không có frame => Offline (tùy bạn chỉnh 3-5s)
+            if (_state.Status == CameraStatus.Connected &&
+                _state.LastFrameUtc != DateTime.MinValue &&
+                (DateTime.UtcNow - _state.LastFrameUtc).TotalSeconds > 3)
+            {
+                _state.Status = CameraStatus.Offline;
+                UpdateStatusBadge();
+                UpdateOverlayText();
+            }
+        };
+        _watchdog.Start();
+
+
         // Double buffer giảm giật khi repaint
         ControlPerf.EnableDoubleBuffer(this);
         ControlPerf.EnableDoubleBuffer(frame);
 
+        Resize += (_, _) => CenterStatusLabel();
+
         Disposed += (_, _) =>
         {
             _disposed = true;
+            _watchdog.Stop();
             Stop();
         };
+    }
+    private void CenterStatusLabel()
+    {
+        _lblCenter.Left = (Width - _lblCenter.Width) / 2;
+        _lblCenter.Top = (Height - _lblCenter.Height) / 2;
     }
 
     public void Start()
@@ -101,13 +144,38 @@ public sealed class CameraViewControl : UserControl
         Stop();
 
         _source = new RtspFrameSource(_cam.Id, _cam.Name, _cam.RtspUrl, _app.Logs);
-        _source.OnStatus += st => this.SafeInvoke(() => UpdateStatus(st));
+        _source.OnStatus += OnSourceStatus;
+
 
         // ❌ KHÔNG SafeInvoke(OnFrame) nữa
         _source.OnFrame += HandleFrame;
 
         _source.Start();
     }
+
+    private void OnSourceStatus(CameraStatus st)
+    {
+        _state.Status = st;
+        if (_disposed || IsDisposed) return;
+
+        if (IsHandleCreated)
+        {
+            BeginInvoke((Action)(() =>
+            {
+                UpdateStatusBadge();
+                UpdateOverlayText();
+            }));
+        }
+    }
+
+    private readonly Label _lblCenter = new()
+    {
+        AutoSize = true,
+        ForeColor = Color.White,
+        BackColor = Color.Transparent,
+        Font = new Font("Segoe UI", 14, FontStyle.Bold),
+        TextAlign = ContentAlignment.MiddleCenter
+    };
 
     public void Stop()
     {
@@ -116,13 +184,19 @@ public sealed class CameraViewControl : UserControl
             if (_source != null)
             {
                 _source.OnFrame -= HandleFrame;
+                _source.OnStatus -= OnSourceStatus;
                 _source.Dispose();
                 _source = null;
             }
         }
         catch { /* ignore */ }
 
-        UpdateStatus(CameraStatus.Offline);
+        _state.Status = CameraStatus.Offline;
+        _state.Fps = 0;
+        _state.LastFrameUtc = DateTime.MinValue;
+
+        UpdateStatusBadge();
+        UpdateOverlayText();
 
         // clear image
         if (!IsDisposed && _pic.Image != null)
@@ -135,12 +209,15 @@ public sealed class CameraViewControl : UserControl
 
     public void SetDetecting(bool enabled) => _detecting = enabled;
 
-    private void UpdateStatus(CameraStatus st)
+    private void UpdateStatusBadge()
     {
-        switch (st)
+        switch (_state.Status)
         {
             case CameraStatus.Connected:
-                _statusBadge.Set("CONNECTED", AppColors.GoodGreen, Color.White);
+                _statusBadge.Set(
+                    $"CONNECTED • {_state.Fps:0.0} FPS",
+                    AppColors.GoodGreen,
+                    Color.White);
                 break;
             case CameraStatus.Reconnecting:
                 _statusBadge.Set("RECONNECTING", AppColors.WarnAmber, Color.White);
@@ -151,8 +228,43 @@ public sealed class CameraViewControl : UserControl
         }
     }
 
+
     private void HandleFrame(Bitmap bmp)
     {
+        var now = DateTime.UtcNow;
+        _state.LastFrameUtc = now;
+        _state.Status = CameraStatus.Connected;
+
+        // FPS
+        if (_fpsWindowStart == DateTime.MinValue)
+            _fpsWindowStart = now;
+
+        _fpsCount++;
+        var elapsed = (now - _fpsWindowStart).TotalSeconds;
+        if (elapsed >= 1)
+        {
+            _state.Fps = _fpsCount / elapsed;
+            _fpsCount = 0;
+            _fpsWindowStart = now;
+        }
+        if (IsHandleCreated && !_disposed && !IsDisposed)
+        {
+            BeginInvoke((Action)(() =>
+            {
+                UpdateStatusBadge();
+                UpdateOverlayText();
+            }));
+        }
+
+
+        if (elapsed >= 1 && IsHandleCreated && !_disposed && !IsDisposed)
+        {
+            BeginInvoke((Action)(() =>
+            {
+                UpdateStatusBadge();   // cập nhật text có FPS
+            }));
+        }
+
         if (_disposed || IsDisposed)
         {
             bmp.Dispose();
@@ -182,6 +294,34 @@ public sealed class CameraViewControl : UserControl
             }
         });
     }
+    private void UpdateOverlayText()
+    {
+        var statusText = _state.Status switch
+        {
+            CameraStatus.Connected => "", // không cần dòng phụ
+            CameraStatus.Reconnecting => "\nRECONNECTING…",
+            _ => "\nNO SIGNAL"
+        };
+
+        _lblOverlay.Text = $"{_cam.Name}{statusText}";
+
+        // làm nổi khi lỗi
+        _lblOverlay.BackColor = _state.Status == CameraStatus.Connected
+            ? Color.FromArgb(120, 0, 0, 0)
+            : Color.FromArgb(160, 200, 60, 60); // đỏ nhạt
+
+        _lblCenter.Text = _state.Status switch
+        {
+            CameraStatus.Reconnecting => "RECONNECTING…",
+            CameraStatus.Offline => "NO SIGNAL",
+            _ => ""
+        };
+
+        _lblCenter.Visible = _state.Status != CameraStatus.Connected;
+        CenterStatusLabel();
+
+    }
+
 
     private async Task ProcessFrameAsync(Bitmap bmp)
     {
@@ -191,20 +331,17 @@ public sealed class CameraViewControl : UserControl
         Detection[] dets = Array.Empty<Detection>();
         Bitmap displayBmp = bmp; // mặc định dùng luôn bmp để tránh clone thừa
 
-        if (_detecting)
+        if (CanDetect)
         {
             await InferenceGate.WaitAsync().ConfigureAwait(false);
             try
             {
                 dets = _app.Detector.Detect(bmp);
-                // Render bbox lên bitmap mới
                 displayBmp = Render(bmp, dets);
-                // bmp không dùng cho UI nữa → dispose
                 bmp.Dispose();
 
                 if (dets.Length > 0)
                 {
-                    // Engine có thể lưu snapshot/clip → chạy luôn ở background (đang ở background rồi)
                     _app.Engine.ProcessDetections(_cam.Id, _cam.Name, displayBmp, dets);
                 }
             }
@@ -213,6 +350,7 @@ public sealed class CameraViewControl : UserControl
                 InferenceGate.Release();
             }
         }
+
 
         if (!canUiUpdate)
         {
