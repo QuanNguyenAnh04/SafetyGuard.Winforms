@@ -152,61 +152,34 @@ public partial class MainForm : Form
             Text = "S",
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 14, FontStyle.Bold),
-            DisabledState = { FillColor = AppColors.PrimaryBlue }
+            DisabledState = { FillColor = AppColors.PrimaryBlue },
+            BorderThickness = 2,
+            BorderColor = Color.FromArgb(60, 255, 255, 255),
         };
         pnlLogo.Controls.Add(logoIcon);
 
-        pnlLogo.Controls.Add(new Label
+        var lblApp = new Guna2HtmlLabel
         {
             Text = "SafetyGuard",
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 13, FontStyle.Bold),
-            AutoSize = true,
-            Location = new Point(70, 22)
-        });
+            BackColor = Color.Transparent,
+            Location = new Point(70, 22),
+            AutoSize = true
+        };
+        pnlLogo.Controls.Add(lblApp);
 
-        pnlLogo.Controls.Add(new Label
+        var lblVer = new Guna2HtmlLabel
         {
             Text = "PRO EDITION v2.1",
             ForeColor = Color.FromArgb(150, 160, 180),
             Font = new Font("Segoe UI", 8),
-            AutoSize = true,
-            Location = new Point(70, 48)
-        });
-
-        // bottom user
-        var pnlUser = new Guna2Panel { Dock = DockStyle.Bottom, Height = 86, FillColor = AppColors.SidebarBg };
-        pnlSidebar.Controls.Add(pnlUser);
-
-        pnlUser.Controls.Add(new Guna2CircleButton
-        {
-            Size = new Size(46, 46),
-            Location = new Point(18, 20),
-            FillColor = Color.FromArgb(80, 30, 200),
-            Text = "AU",
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            DisabledState = { FillColor = Color.FromArgb(80, 30, 200) }
-        });
-
-        pnlUser.Controls.Add(new Label
-        {
-            Text = "System Admin",
-            ForeColor = Color.White,
-            AutoSize = true,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            Location = new Point(72, 22)
-        });
-
-        pnlUser.Controls.Add(new Label
-        {
-            Text = "admin@factory.com",
-            ForeColor = Color.FromArgb(150, 160, 180),
-            AutoSize = true,
-            Font = new Font("Segoe UI", 8),
-            Location = new Point(72, 45)
-        });
-
+            BackColor = Color.Transparent,
+            Location = new Point(70, 48),
+            AutoSize = true
+        };
+        pnlLogo.Controls.Add(lblVer);
+        
         // menu scroll
         var pnlMenu = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.Transparent };
         pnlSidebar.Controls.Add(pnlMenu);
@@ -280,6 +253,7 @@ public partial class MainForm : Form
         };
         pnlTopbar.Controls.Add(right);
 
+        /*
         var bell = new Guna2CircleButton
         {
             Size = new Size(36, 36),
@@ -291,6 +265,7 @@ public partial class MainForm : Form
             Location = new Point(10, 14)
         };
         right.Controls.Add(bell);
+        */
 
         lblDate = new Label
         {
