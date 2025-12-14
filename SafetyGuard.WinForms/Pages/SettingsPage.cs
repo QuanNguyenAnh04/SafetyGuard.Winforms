@@ -2,12 +2,15 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Guna.UI2.WinForms;
 using SafetyGuard.WinForms.Dialogs;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.UI;
 using Timer = System.Windows.Forms.Timer;
+
 namespace SafetyGuard.WinForms.Pages;
 
 public sealed class SettingsPage : UserControl
@@ -18,7 +21,7 @@ public sealed class SettingsPage : UserControl
     {
         Dock = DockStyle.Fill,
         AutoScroll = true,
-        BackColor = Color.Transparent
+        BackColor = AppColors.ContentBg // ✅ đừng Transparent -> giảm repaint khi scroll
     };
 
     private readonly FlowLayoutPanel _stack = new()
@@ -27,8 +30,9 @@ public sealed class SettingsPage : UserControl
         AutoSize = true,
         WrapContents = false,
         FlowDirection = FlowDirection.TopDown,
-        BackColor = Color.Transparent,
-        Padding = new Padding(24, 16, 24, 24)
+        BackColor = AppColors.ContentBg,
+        Padding = new Padding(24, 16, 24, 24),
+        Margin = Padding.Empty
     };
 
     // sections
@@ -47,10 +51,13 @@ public sealed class SettingsPage : UserControl
     private Guna2ToggleSwitch _swClip = null!;
     private TableLayoutPanel _centerLayout = null!;
 
-
     // debounce save for sliders
     private readonly Timer _saveDebounce = new() { Interval = 350 };
     private Action? _pendingSave;
+
+    // ✅ debounce layout (FitCardsToWidth)
+    private readonly Timer _fitDebounce = new() { Interval = 80 };
+    private int _lastFitWidth = -1;
 
     public SettingsPage(AppBootstrap app)
     {
@@ -60,6 +67,7 @@ public sealed class SettingsPage : UserControl
         BackColor = AppColors.ContentBg;
 
         Controls.Add(_scroll);
+
         _centerLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -67,12 +75,11 @@ public sealed class SettingsPage : UserControl
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 3,
             RowCount = 1,
-            BackColor = Color.Transparent,
+            BackColor = AppColors.ContentBg,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
 
-        // 50% - FIXED - 50%  (cột giữa sẽ set bằng FitCardsToWidth)
         _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
         _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 980));
         _centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
@@ -80,21 +87,32 @@ public sealed class SettingsPage : UserControl
 
         _scroll.Controls.Add(_centerLayout);
 
-        // ✅ Quan trọng: stack KHÔNG được Dock=Top vào scroll nữa
-        _stack.Dock = DockStyle.Top; // được, nhưng nằm trong cell giữa
+        _stack.Dock = DockStyle.Top;
         _stack.Margin = Padding.Empty;
-
         _centerLayout.Controls.Add(_stack, 1, 0);
 
+        // ✅ PERF: double buffer cho vùng scroll (giảm giật)
+        EnableDoubleBuffer(_scroll);
+        EnableDoubleBuffer(_stack);
+        EnableDoubleBuffer(_centerLayout);
 
         BuildHeader();
         BuildCameraManagement();
         BuildDetectionRules();
         BuildSystemLogic();
 
-        // resize: keep cards centered + fixed max width like mock
-        _scroll.Resize += (_, _) => FitCardsToWidth();
-        FitCardsToWidth();
+        // ✅ debounce FitCardsToWidth (đừng gọi liên tục trên Resize)
+        _fitDebounce.Tick += (_, _) =>
+        {
+            _fitDebounce.Stop();
+            FitCardsToWidth();
+        };
+        _scroll.Resize += (_, _) =>
+        {
+            if (!IsHandleCreated) return;
+            _fitDebounce.Stop();
+            _fitDebounce.Start();
+        };
 
         EnsureDefaultsIfEmpty();
         ReloadAll();
@@ -105,6 +123,9 @@ public sealed class SettingsPage : UserControl
             _pendingSave?.Invoke();
             _pendingSave = null;
         };
+
+        // initial fit
+        FitCardsToWidth();
     }
 
     // =========================
@@ -114,7 +135,7 @@ public sealed class SettingsPage : UserControl
     {
         var p = new Panel
         {
-            BackColor = Color.Transparent,
+            BackColor = AppColors.ContentBg,
             Height = 56,
             Width = 980,
             Margin = new Padding(0, 0, 0, 14)
@@ -154,7 +175,6 @@ public sealed class SettingsPage : UserControl
         _cardCameras.Margin = new Padding(0, 0, 0, 18);
         _stack.Controls.Add(_cardCameras);
 
-        // header row
         var header = new Panel { Dock = DockStyle.Top, Height = 74, BackColor = Color.Transparent };
         _cardCameras.Controls.Add(header);
 
@@ -187,7 +207,6 @@ public sealed class SettingsPage : UserControl
             Anchor = AnchorStyles.Top | AnchorStyles.Right
         };
         header.Controls.Add(btnAdd);
-
         header.Resize += (_, _) => btnAdd.Location = new Point(header.Width - btnAdd.Width, 6);
 
         btnAdd.Click += (_, _) =>
@@ -201,7 +220,6 @@ public sealed class SettingsPage : UserControl
             ReloadAll();
         };
 
-        // ✅ listWrap: Dock TOP + AutoSize để card tính chiều cao đúng
         var listWrap = new Panel
         {
             Dock = DockStyle.Top,
@@ -219,11 +237,13 @@ public sealed class SettingsPage : UserControl
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false,
             FlowDirection = FlowDirection.TopDown,
-            BackColor = Color.Transparent
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty
         };
         listWrap.Controls.Add(_cameraList);
 
-        // ✅ khi card đổi size thì resize row theo inner width
+        EnableDoubleBuffer(_cameraList);
+
         _cardCameras.Resize += (_, _) => ResizeCameraRows();
     }
 
@@ -234,39 +254,50 @@ public sealed class SettingsPage : UserControl
         int inner = _cardCameras.Width - _cardCameras.Padding.Left - _cardCameras.Padding.Right;
         if (inner < 200) return;
 
-        foreach (Control c in _cameraList.Controls)
+        // ✅ Suspend layout để tránh giật
+        _cameraList.SuspendLayout();
+        try
         {
-            c.Width = inner;
+            foreach (Control c in _cameraList.Controls)
+                if (c.Width != inner) c.Width = inner;
+        }
+        finally
+        {
+            _cameraList.ResumeLayout(true);
         }
     }
 
-
     private void ReloadCameras()
     {
-        _cameraList.Controls.Clear();
-
-        var cams = _app.Settings.Current.Cameras.ToList();
-
-        // demo nếu chưa có
-        if (cams.Count == 0)
+        _cameraList.SuspendLayout();
+        try
         {
-            cams.Add(new CameraConfig { Id = "CAM-01", Name = "CAM-01: Main Entrance", RtspUrl = "rtsp://192.168.1.10:554/stream1", Enabled = true });
-            cams.Add(new CameraConfig { Id = "CAM-04", Name = "CAM-04: Back Alley", RtspUrl = "rtsp://192.168.1.14:554/stream1", Enabled = true });
+            _cameraList.Controls.Clear();
+
+            var cams = _app.Settings.Current.Cameras.ToList();
+
+            if (cams.Count == 0)
+            {
+                cams.Add(new CameraConfig { Id = "CAM-01", Name = "CAM-01: Main Entrance", RtspUrl = "rtsp://192.168.1.10:554/stream1", Enabled = true });
+                cams.Add(new CameraConfig { Id = "CAM-04", Name = "CAM-04: Back Alley", RtspUrl = "rtsp://192.168.1.14:554/stream1", Enabled = true });
+            }
+
+            foreach (var cam in cams)
+            {
+                var status = cam.Id.EndsWith("01", StringComparison.OrdinalIgnoreCase)
+                    ? CameraStatus.Connected
+                    : CameraStatus.Offline;
+
+                var row = CreateCameraRow(cam, status);
+                _cameraList.Controls.Add(row);
+            }
+        }
+        finally
+        {
+            _cameraList.ResumeLayout(true);
         }
 
-        foreach (var cam in cams)
-        {
-            var status = cam.Id.EndsWith("01", StringComparison.OrdinalIgnoreCase)
-                ? CameraStatus.Connected
-                : CameraStatus.Offline;
-
-            var row = CreateCameraRow(cam, status);
-            _cameraList.Controls.Add(row);
-        }
-
-        // ✅ sau khi add xong thì fit theo card
         ResizeCameraRows();
-
     }
 
     private Control CreateCameraRow(CameraConfig cam, CameraStatus status)
@@ -280,9 +311,10 @@ public sealed class SettingsPage : UserControl
             Margin = new Padding(0, 0, 0, 12),
             Padding = new Padding(14, 10, 14, 10)
         };
+
+        // ✅ PERF: Shadow cho từng row rất nặng khi scroll
         row.ShadowDecoration.Enabled = false;
 
-        // icon box
         var iconBox = new Guna2Panel
         {
             BorderRadius = 10,
@@ -318,7 +350,6 @@ public sealed class SettingsPage : UserControl
             Location = new Point(58, 32)
         });
 
-        // status badge
         var badge = new Guna2Button
         {
             Text = status == CameraStatus.Connected ? "Connected" : "Offline",
@@ -333,10 +364,18 @@ public sealed class SettingsPage : UserControl
         };
         row.Controls.Add(badge);
 
-        // action buttons
         var btnRefresh = IconBtn("⟳");
         var btnEdit = IconBtn("✎");
         var btnDel = IconBtn("🗑");
+
+        // làm rõ icon nút (không bị “tàng hình”)
+        btnRefresh.FillColor = Color.FromArgb(242, 244, 248);
+        btnEdit.FillColor = Color.FromArgb(242, 244, 248);
+
+        btnDel.FillColor = Color.FromArgb(255, 235, 235);
+        btnDel.ForeColor = Color.FromArgb(180, 40, 40);
+        btnDel.HoverState.FillColor = Color.FromArgb(255, 220, 220);
+        btnDel.HoverState.ForeColor = Color.FromArgb(160, 20, 20);
 
         row.Controls.Add(btnRefresh);
         row.Controls.Add(btnEdit);
@@ -379,46 +418,8 @@ public sealed class SettingsPage : UserControl
             _app.Settings.Save(s);
             ReloadAll();
         };
-        btnDel.FillColor = Color.FromArgb(255, 235, 235);
-        btnDel.ForeColor = Color.FromArgb(180, 40, 40);
-        btnDel.HoverState.FillColor = Color.FromArgb(255, 220, 220);
-        btnDel.HoverState.ForeColor = Color.FromArgb(160, 20, 20);
-
 
         return row;
-
-        static Guna2Button IconBtn(string text)
-        {
-            var b = new Guna2Button
-            {
-                Text = text,
-                BorderRadius = 8,
-                Size = new Size(30, 30),
-
-                // ✅ luôn có nền nhẹ để nhìn thấy vị trí nút
-                FillColor = Color.FromArgb(242, 244, 248),
-                ForeColor = Color.FromArgb(90, 100, 120),
-
-                Font = new Font("Segoe UI Symbol", 11, FontStyle.Bold),
-                TextOffset = new Point(0, -1),
-
-                HoverState =
-        {
-            FillColor = Color.FromArgb(230, 235, 245),
-            ForeColor = Color.FromArgb(50, 60, 80)
-        },
-                PressedColor = Color.FromArgb(220, 228, 242),
-
-                Cursor = Cursors.Hand
-            };
-
-            // tắt border mặc định
-            b.BorderThickness = 0;
-            b.DisabledState.FillColor = b.FillColor;
-            b.DisabledState.ForeColor = b.ForeColor;
-
-            return b;
-        }
 
     }
 
@@ -462,40 +463,64 @@ public sealed class SettingsPage : UserControl
         _rulesGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
         _rulesGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
 
+        EnableDoubleBuffer(_rulesGrid);
+
         _cardRules.Controls.Add(_rulesGrid);
     }
 
     private void ReloadRules()
     {
-        // rebuild dynamic grid (rules + add tile)
         _rulesGrid.SuspendLayout();
-        _rulesGrid.Controls.Clear();
-
-        var rules = _app.Settings.Current.Rules.ToList();
-
-        // +1 tile for Add Rule
-        var tiles = rules.Count + 1;
-        var rows = (int)Math.Ceiling(tiles / 2.0);
-        _rulesGrid.RowStyles.Clear();
-        _rulesGrid.RowCount = rows;
-
-        for (int r = 0; r < rows; r++)
-            _rulesGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
-
-        int i = 0;
-        foreach (var rule in rules)
+        try
         {
-            var tile = CreateRuleTile(rule);
-            _rulesGrid.Controls.Add(tile, i % 2, i / 2);
-            i++;
+            _rulesGrid.Controls.Clear();
+
+            var rules = _app.Settings.Current.Rules.ToList();
+            var tiles = rules.Count + 1;
+            var rows = (int)Math.Ceiling(tiles / 2.0);
+
+            _rulesGrid.RowStyles.Clear();
+            _rulesGrid.RowCount = rows;
+
+            for (int r = 0; r < rows; r++)
+                _rulesGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+
+            int i = 0;
+            foreach (var rule in rules)
+            {
+                var tile = CreateRuleTile(rule);
+                _rulesGrid.Controls.Add(tile, i % 2, i / 2);
+                i++;
+            }
+
+            var addTile = CreateAddRuleTile();
+            _rulesGrid.Controls.Add(addTile, i % 2, i / 2);
         }
-
-        // Add Rule tile (always last)
-        var addTile = CreateAddRuleTile();
-        _rulesGrid.Controls.Add(addTile, i % 2, i / 2);
-
-        _rulesGrid.ResumeLayout();
+        finally
+        {
+            _rulesGrid.ResumeLayout(true);
+        }
     }
+
+    private static Guna2Button IconBtn(string text)
+    {
+        var b = new Guna2Button
+        {
+            Text = text,
+            BorderRadius = 8,
+            Size = new Size(30, 30),
+            FillColor = Color.FromArgb(238, 242, 248),
+            BorderThickness = 1,
+            BorderColor = Color.FromArgb(210, 220, 235),
+            ForeColor = Color.FromArgb(60, 70, 90),
+            Font = new Font("Segoe UI Symbol", 11, FontStyle.Bold),
+            TextOffset = new Point(0, -1),
+            HoverState = { FillColor = Color.FromArgb(225, 232, 245) },
+            Cursor = Cursors.Hand
+        };
+        return b;
+    }
+
 
     private Control CreateRuleTile(DetectionRule rule)
     {
@@ -527,18 +552,18 @@ public sealed class SettingsPage : UserControl
         };
         p.Controls.Add(sw);
 
-        var btnDel = new Guna2Button
-        {
-            Text = "✕",
-            Size = new Size(28, 28),
-            BorderRadius = 8,
-            FillColor = Color.Transparent,
-            ForeColor = Color.FromArgb(120, 130, 150),
-            Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            HoverState = { FillColor = Color.FromArgb(235, 238, 245) },
-            Anchor = AnchorStyles.Top | AnchorStyles.Right
-        };
+        var btnDel = IconBtn("🗑");   // hoặc "X" / "×" nếu muốn chắc chắn hơn
+        btnDel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+        // màu delete (đỏ nhẹ)
+        btnDel.FillColor = Color.FromArgb(255, 235, 235);
+        btnDel.ForeColor = Color.FromArgb(180, 40, 40);
+        btnDel.HoverState.FillColor = Color.FromArgb(255, 220, 220);
+        btnDel.HoverState.ForeColor = Color.FromArgb(160, 20, 20);
         p.Controls.Add(btnDel);
+
+
+
 
         var lblSens = new Label
         {
@@ -570,7 +595,6 @@ public sealed class SettingsPage : UserControl
         p.Resize += (_, _) => Layout();
         Layout();
 
-        // interactions
         sw.CheckedChanged += (_, _) =>
         {
             rule.Enabled = sw.Checked;
@@ -583,7 +607,6 @@ public sealed class SettingsPage : UserControl
         tb.ValueChanged += (_, _) =>
         {
             lblSens.Text = $"Sensitivity  {tb.Value}%";
-            // debounce save while dragging
             Debounce(() =>
             {
                 rule.ConfidenceThreshold = tb.Value / 100f;
@@ -655,7 +678,6 @@ public sealed class SettingsPage : UserControl
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
             var s = _app.Settings.Current;
-            // nếu đã có thì update, chưa có thì add
             var idx = s.Rules.FindIndex(r => Equals(r.Type, dlg.Rule.Type));
             if (idx >= 0) s.Rules[idx] = dlg.Rule;
             else s.Rules.Add(dlg.Rule);
@@ -708,7 +730,6 @@ public sealed class SettingsPage : UserControl
             Location = new Point(0, 26)
         });
 
-        // Grid 2 columns
         var grid = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -724,18 +745,17 @@ public sealed class SettingsPage : UserControl
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
         _cardLogic.Controls.Add(grid);
 
-        // Anti-spam
+        EnableDoubleBuffer(grid);
+
         grid.Controls.Add(CreateLabeledNumeric("Anti-Spam Cooldown (Seconds)",
             "Prevents repeated alerts for the same violation.", out _numCooldown, 5, 1, 600), 0, 0);
 
         grid.Controls.Add(CreateLabeledNumeric("Min Consecutive Frames (N)",
             "Violation triggers only if it persists for N frames.", out _numMinFrames, 5, 1, 60), 1, 0);
 
-        // Storage
         grid.Controls.Add(CreateStorageBlock(), 0, 1);
         grid.SetColumnSpan(grid.Controls[grid.Controls.Count - 1], 2);
 
-        // Save on change (debounced)
         _numCooldown.ValueChanged += (_, _) => Debounce(SaveLogic);
         _numMinFrames.ValueChanged += (_, _) => Debounce(SaveLogic);
     }
@@ -914,25 +934,29 @@ public sealed class SettingsPage : UserControl
 
         s.EvidenceRoot = _tbEvidenceRoot.Text.Trim();
 
-        // retention parse
         var sel = _cbRetention.SelectedItem?.ToString() ?? "30 Days";
         s.RetentionDays = sel.StartsWith("7") ? 7 : sel.StartsWith("90") ? 90 : 30;
 
         s.SaveSnapshot = _swSnapshot.Checked;
         s.SaveShortClip = _swClip.Checked;
 
-        _app.Settings.Save(s); // bạn đang save y hệt kiểu này :contentReference[oaicite:2]{index=2}
-        _app.Violations.RemoveOlderThan(s.RetentionDays);
+        _app.Settings.Save(s);
+
+        // ✅ PERF: cleanup retention chạy nền, không block UI
+        var days = s.RetentionDays;
+        _ = Task.Run(() =>
+        {
+            try { _app.Violations.RemoveOlderThan(days); }
+            catch { /* ignore */ }
+        });
     }
 
-    // =========================
-    // Reload / defaults / layout helpers
-    // =========================
     private void ReloadAll()
     {
         ReloadCameras();
         ReloadRules();
         LoadLogicFromSettings();
+        // Fit sẽ debounce theo Resize; gọi 1 lần cũng ok
         FitCardsToWidth();
     }
 
@@ -964,7 +988,6 @@ public sealed class SettingsPage : UserControl
 
         if (s.Rules.Count == 0)
         {
-            // tạo demo rules nếu trống
             s.Rules.Add(new DetectionRule { Type = ViolationType.NoHelmet, Enabled = true, ConfidenceThreshold = 0.75f });
             s.Rules.Add(new DetectionRule { Type = ViolationType.NoVest, Enabled = true, ConfidenceThreshold = 0.60f });
             s.Rules.Add(new DetectionRule { Type = ViolationType.Smoking, Enabled = false, ConfidenceThreshold = 0.50f });
@@ -976,40 +999,47 @@ public sealed class SettingsPage : UserControl
     {
         if (_centerLayout == null) return;
 
-        int max = 1100; // muốn rộng hơn thì tăng
-        int usable = _scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8;
-
+        int max = 1100;
+        int sb = _scroll.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0;
+        int usable = _scroll.ClientSize.Width - sb - 8;
         int w = Math.Max(720, Math.Min(max, usable - 40));
+        if (w <= 0) return;
 
-        // ✅ set cột giữa
-        _centerLayout.ColumnStyles[1].SizeType = SizeType.Absolute;
-        _centerLayout.ColumnStyles[1].Width = w;
+        // ✅ chỉ chạy khi width đổi đáng kể
+        if (Math.Abs(w - _lastFitWidth) < 2) return;
+        _lastFitWidth = w;
 
-        // set width cho stack + cards
-        _stack.Width = w;
+        _scroll.SuspendLayout();
+        _centerLayout.SuspendLayout();
+        _stack.SuspendLayout();
 
-        foreach (Control c in _stack.Controls)
+        try
         {
-            if (c is Guna2Panel gp)
+            _centerLayout.ColumnStyles[1].SizeType = SizeType.Absolute;
+            _centerLayout.ColumnStyles[1].Width = w;
+
+            if (_stack.Width != w) _stack.Width = w;
+
+            foreach (Control c in _stack.Controls)
             {
-                gp.Width = w;
-                gp.MinimumSize = new Size(w, 0);
-                gp.MaximumSize = new Size(w, 0);
+                if (c.Width != w) c.Width = w;
+
+                if (c is Guna2Panel gp)
+                {
+                    if (gp.MinimumSize.Width != w) gp.MinimumSize = new Size(w, 0);
+                    if (gp.MaximumSize.Width != w) gp.MaximumSize = new Size(w, 0);
+                }
             }
-            else
-            {
-                c.Width = w;
-            }
+
+            ResizeCameraRows();
         }
-
-        ResizeCameraRows();
-
-        // refresh layout
-        _centerLayout.PerformLayout();
+        finally
+        {
+            _stack.ResumeLayout(true);
+            _centerLayout.ResumeLayout(true);
+            _scroll.ResumeLayout(true);
+        }
     }
-
-
-
 
     private static Guna2Panel CreateCard()
     {
@@ -1018,23 +1048,21 @@ public sealed class SettingsPage : UserControl
             BorderRadius = 16,
             FillColor = Color.White,
             Width = 980,
-
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-
-            // ✅ khóa width mặc định để không co lại
             MinimumSize = new Size(980, 0),
             MaximumSize = new Size(980, 0),
+
+            // ✅ border nhẹ thay shadow (mượt hơn rất nhiều)
+            BorderThickness = 1,
+            BorderColor = Color.FromArgb(235, 240, 250)
         };
 
-        card.ShadowDecoration.Enabled = true;
-        card.ShadowDecoration.Depth = 8;
-        card.ShadowDecoration.BorderRadius = 16;
-        card.ShadowDecoration.Shadow = new Padding(0, 4, 0, 8);
+        // ✅ PERF: shadow card gây lag khi scroll
+        card.ShadowDecoration.Enabled = false;
 
         return card;
     }
-
 
     private void Debounce(Action action)
     {
@@ -1085,13 +1113,13 @@ public sealed class SettingsPage : UserControl
 
             var used = new HashSet<string>(existing.Select(r => r.Type.ToString()));
 
-            // populate enum values not yet used
             var all = Enum.GetValues(typeof(ViolationType)).Cast<ViolationType>()
                 .Select(v => v.ToString())
                 .Where(n => !used.Contains(n))
                 .ToList();
 
-            if (all.Count == 0) all.AddRange(Enum.GetValues(typeof(ViolationType)).Cast<ViolationType>().Select(v => v.ToString()));
+            if (all.Count == 0)
+                all.AddRange(Enum.GetValues(typeof(ViolationType)).Cast<ViolationType>().Select(v => v.ToString()));
 
             _cbType.Items.AddRange(all.Cast<object>().ToArray());
             _cbType.SelectedIndex = 0;
@@ -1159,5 +1187,12 @@ public sealed class SettingsPage : UserControl
                 Close();
             };
         }
+    }
+
+    // ===== helpers =====
+    private static void EnableDoubleBuffer(Control c)
+    {
+        typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.SetValue(c, true, null);
     }
 }

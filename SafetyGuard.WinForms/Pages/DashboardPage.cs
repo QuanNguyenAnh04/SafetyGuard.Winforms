@@ -9,7 +9,7 @@ using LiveChartsCore.SkiaSharpView.WinForms;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.UI;
 using LiveChartsCore.Measure;
-
+using Timer = System.Windows.Forms.Timer;
 
 namespace SafetyGuard.WinForms.Pages;
 
@@ -28,6 +28,7 @@ public sealed class DashboardPage : UserControl
     // keep last data to re-apply on resize without recompute
     private ISeries[] _trendSeries = Array.Empty<ISeries>();
     private ISeries[] _pieSeries = Array.Empty<ISeries>();
+    private readonly Timer _chartDebounce = new() { Interval = 120 };
 
     public DashboardPage(AppBootstrap app)
     {
@@ -99,8 +100,33 @@ public sealed class DashboardPage : UserControl
         BuildPieCard(cardPie);
 
         // ✅ force charts to re-layout when the page resizes (fix "drift")
-        Resize += (_, _) => ForceChartsLayout();
+        //Resize += (_, _) => ForceChartsLayout();
+
+        _chartDebounce.Tick += (_, _) =>
+        {
+            _chartDebounce.Stop();
+            ApplyChartsLayout();
+        };
+
+
     }
+
+    private void RequestChartsLayout()
+    {
+        _chartDebounce.Stop();
+        _chartDebounce.Start();
+    }
+
+    private void ApplyChartsLayout()
+    {
+        if (_trend != null && _trendSeries.Length > 0) _trend.Series = _trendSeries;
+        if (_pie != null && _pieSeries.Length > 0) _pie.Series = _pieSeries;
+
+        _trend?.Update();
+        _pie?.Update();
+    }
+
+
 
     private Guna2ShadowPanel KpiCard(string title, out Label value, string sub, Color tint, string icon)
     {
@@ -180,7 +206,9 @@ public sealed class DashboardPage : UserControl
         card.Controls.Add(_trend);
 
         // ✅ important: update layout when chart itself resizes
-        _trend.SizeChanged += (_, _) => ForceChartsLayout();
+        //_trend.SizeChanged += (_, _) => ForceChartsLayout();
+        Resize += (_, _) => RequestChartsLayout();
+
     }
 
     private void BuildPieCard(Guna2ShadowPanel card)
@@ -199,7 +227,9 @@ public sealed class DashboardPage : UserControl
         };
         card.Controls.Add(_pie);
 
-        _pie.SizeChanged += (_, _) => ForceChartsLayout();
+        //_pie.SizeChanged += (_, _) => ForceChartsLayout();
+        Resize += (_, _) => RequestChartsLayout();
+
     }
 
     private void ConfigureCharts()
@@ -238,23 +268,11 @@ public sealed class DashboardPage : UserControl
 
         // give a bit padding so pie doesn't appear "stuck" to top-left when wide
         _pie.Padding = new Padding(10);
+        //_trend.AnimationsSpeed = TimeSpan.Zero;
+        //_pie.AnimationsSpeed = TimeSpan.Zero;
+
     }
 
-    private void ForceChartsLayout()
-    {
-        // Re-apply series (LiveCharts recalculates layout) + Update
-        if (_trend != null)
-        {
-            if (_trendSeries.Length > 0) _trend.Series = _trendSeries;
-            _trend.Update();
-        }
-
-        if (_pie != null)
-        {
-            if (_pieSeries.Length > 0) _pie.Series = _pieSeries;
-            _pie.Update();
-        }
-    }
 
     private void RefreshMetrics()
     {
@@ -308,6 +326,7 @@ public sealed class DashboardPage : UserControl
 
         _pie.Series = _pieSeries;
 
-        ForceChartsLayout();
+        RequestChartsLayout();
+
     }
 }

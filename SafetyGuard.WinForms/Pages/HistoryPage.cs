@@ -8,7 +8,7 @@ using SafetyGuard.WinForms.Dialogs;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.Services;
 using SafetyGuard.WinForms.UI;
-
+using Timer = System.Windows.Forms.Timer;
 namespace SafetyGuard.WinForms.Pages;
 
 public sealed class HistoryPage : UserControl
@@ -17,6 +17,7 @@ public sealed class HistoryPage : UserControl
 
     private readonly Guna2DataGridView _grid = new() { Dock = DockStyle.Fill };
     private List<ViolationRecord> _current = new();
+    private readonly Timer _debounce = new() { Interval = 250 };
 
     private readonly Guna2TextBox _search = new() { BorderRadius = 10, PlaceholderText = "Search camera/type..." };
     private readonly Guna2ComboBox _cbType = new() { BorderRadius = 10, DrawMode = DrawMode.OwnerDrawFixed, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -38,6 +39,8 @@ public sealed class HistoryPage : UserControl
 
     private void BuildUI()
     {
+        _debounce.Tick += (_, _) => { _debounce.Stop(); RefreshData(); };
+
         var root = new Panel { Dock = DockStyle.Fill };
         Controls.Add(root);
 
@@ -101,13 +104,16 @@ public sealed class HistoryPage : UserControl
         bar.Controls.Add(btnXlsx);
 
         // Grid
-        
 
 
-        _search.TextChanged += (_, _) => RefreshData();
-        _cbType.SelectedIndexChanged += (_, _) => RefreshData();
-        _cbStatus.SelectedIndexChanged += (_, _) => RefreshData();
+        _search.TextChanged += (_, _) => QueueRefresh();
+        _cbType.SelectedIndexChanged += (_, _) => QueueRefresh();
+        _cbStatus.SelectedIndexChanged += (_, _) => QueueRefresh();
+        _from.ValueChanged += (_, _) => QueueRefresh();
+        _to.ValueChanged += (_, _) => QueueRefresh();
+
     }
+
 
     private void SetupGrid()
     {
@@ -160,7 +166,16 @@ public sealed class HistoryPage : UserControl
                 }
             }
         };
+        ControlPerf.EnableDoubleBuffer(_grid);
+
     }
+
+    private void QueueRefresh()
+    {
+        _debounce.Stop();
+        _debounce.Start();
+    }
+
 
     private void RefreshData()
     {

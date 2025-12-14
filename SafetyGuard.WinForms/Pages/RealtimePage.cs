@@ -28,6 +28,8 @@ public sealed class RealtimePage : UserControl
     private readonly Panel _left = new() { Dock = DockStyle.Fill, BackColor = Color.Transparent };
     private readonly Panel _right = new() { Dock = DockStyle.Right, Width = 360, BackColor = Color.Transparent };
 
+    private const int MaxEventCards = 30;
+
     // Live host
     private readonly Panel _liveHost = new() { Dock = DockStyle.Fill, BackColor = Color.Transparent };
     private readonly Panel _singleHost = new() { Dock = DockStyle.Fill, BackColor = Color.Transparent };
@@ -222,6 +224,8 @@ public sealed class RealtimePage : UserControl
         header.Controls.Add(lbl);
 
         eventCard.Controls.Add(_events);
+        ControlPerf.EnableDoubleBuffer(_events);
+
 
         // Default: Single
         SetMode(ViewMode.Single);
@@ -333,12 +337,14 @@ public sealed class RealtimePage : UserControl
 
     private void PushEventCard(ViolationRecord v)
     {
+        _events.SuspendLayout();
+
         var p = new Guna2Panel
         {
             BorderRadius = 12,
             FillColor = Color.FromArgb(255, 240, 240),
             Height = 90,
-            Width = Math.Max(220, _events.ClientSize.Width - 30),
+            Width = Math.Max(220, _events.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 18),
             Margin = new Padding(6),
             Padding = new Padding(12)
         };
@@ -356,10 +362,20 @@ public sealed class RealtimePage : UserControl
             UiHelpers.SeverityColor(v.Level),
             Color.White)
         { Location = new Point(10, 58) };
-
         p.Controls.Add(badge);
 
         _events.Controls.Add(p);
         _events.Controls.SetChildIndex(p, 0);
+
+        // ✅ giới hạn số card để không lag dần theo thời gian
+        while (_events.Controls.Count > MaxEventCards)
+        {
+            var last = _events.Controls[_events.Controls.Count - 1];
+            _events.Controls.RemoveAt(_events.Controls.Count - 1);
+            last.Dispose();
+        }
+
+        _events.ResumeLayout(true);
     }
+
 }

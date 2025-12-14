@@ -133,6 +133,11 @@ public partial class MainForm : Form
         pnlContent.Controls.Add(pnlHost);
         pnlContent.Controls.Add(pnlTopbar);
 
+        ControlPerf.EnableDoubleBuffer(pnlHost);
+        ControlPerf.EnableDoubleBuffer(pnlContent);
+        ControlPerf.EnableDoubleBuffer(pnlSidebar);
+
+
         ResumeLayout();
     }
 
@@ -183,6 +188,7 @@ public partial class MainForm : Form
         // menu scroll
         var pnlMenu = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.Transparent };
         pnlSidebar.Controls.Add(pnlMenu);
+        ControlPerf.EnableDoubleBuffer(pnlMenu);
 
         // ✅ Dock=Top: add bottom-most first, top-most last
         AddNav(pnlMenu, "System Settings", "settings");

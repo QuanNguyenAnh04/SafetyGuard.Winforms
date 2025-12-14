@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Guna.UI2.WinForms;
 using SafetyGuard.WinForms.Models;
@@ -16,7 +19,6 @@ public sealed class CameraViewControl : UserControl
 
     private FrameSourceBase? _source;
 
-    // ✅ image fills the whole rounded frame
     private readonly PictureBox _pic = new()
     {
         Dock = DockStyle.Fill,
@@ -37,8 +39,17 @@ public sealed class CameraViewControl : UserControl
     private readonly BadgeLabel _statusBadge;
 
     private bool _detecting;
+    private bool _disposed;
 
-    public event Action<ViolationRecord>? OnViolation;
+    // ===== PERF =====
+    private int _processing; // 0/1 để drop frame khi bận
+    private long _lastUiTick;
+    private const int UiFps = 15;
+    private static readonly long UiIntervalTicks =
+        (long)(Stopwatch.Frequency / (double)UiFps);
+
+    // nếu muốn giới hạn số luồng detect chạy song song (đa camera)
+    private static readonly SemaphoreSlim InferenceGate = new(initialCount: 2, maxCount: 2);
 
     public CameraViewControl(AppBootstrap app, CameraConfig cam)
     {
@@ -50,13 +61,12 @@ public sealed class CameraViewControl : UserControl
         Margin = Padding.Empty;
         Padding = Padding.Empty;
 
-        // ✅ frame has NO padding -> removes the "border/white frame" feeling
         var frame = new Guna2Panel
         {
             Dock = DockStyle.Fill,
             BorderRadius = 14,
             FillColor = Color.Black,
-            Padding = Padding.Empty,        // ✅ was Padding(2)
+            Padding = Padding.Empty,
             Margin = Padding.Empty,
             BorderThickness = 0,
         };
@@ -65,7 +75,6 @@ public sealed class CameraViewControl : UserControl
 
         frame.Controls.Add(_pic);
 
-        // Overlay labels on top of picture
         _lblOverlay.Text = $"{cam.Name}";
         _lblOverlay.Location = new Point(10, 10);
         _pic.Controls.Add(_lblOverlay);
@@ -76,7 +85,15 @@ public sealed class CameraViewControl : UserControl
         };
         _pic.Controls.Add(_statusBadge);
 
-        Disposed += (_, _) => Stop();
+        // Double buffer giảm giật khi repaint
+        ControlPerf.EnableDoubleBuffer(this);
+        ControlPerf.EnableDoubleBuffer(frame);
+
+        Disposed += (_, _) =>
+        {
+            _disposed = true;
+            Stop();
+        };
     }
 
     public void Start()
@@ -85,15 +102,35 @@ public sealed class CameraViewControl : UserControl
 
         _source = new RtspFrameSource(_cam.Id, _cam.Name, _cam.RtspUrl, _app.Logs);
         _source.OnStatus += st => this.SafeInvoke(() => UpdateStatus(st));
-        _source.OnFrame += bmp => this.SafeInvoke(() => OnFrame(bmp));
+
+        // ❌ KHÔNG SafeInvoke(OnFrame) nữa
+        _source.OnFrame += HandleFrame;
+
         _source.Start();
     }
 
     public void Stop()
     {
-        _source?.Dispose();
-        _source = null;
+        try
+        {
+            if (_source != null)
+            {
+                _source.OnFrame -= HandleFrame;
+                _source.Dispose();
+                _source = null;
+            }
+        }
+        catch { /* ignore */ }
+
         UpdateStatus(CameraStatus.Offline);
+
+        // clear image
+        if (!IsDisposed && _pic.Image != null)
+        {
+            var old = _pic.Image;
+            _pic.Image = null;
+            old.Dispose();
+        }
     }
 
     public void SetDetecting(bool enabled) => _detecting = enabled;
@@ -114,20 +151,95 @@ public sealed class CameraViewControl : UserControl
         }
     }
 
-    private void OnFrame(Bitmap bmp)
+    private void HandleFrame(Bitmap bmp)
     {
-        var detections = _detecting ? _app.Detector.Detect(bmp) : Array.Empty<Detection>();
-
-        using var rendered = Render(bmp, detections);
-        _pic.Image?.Dispose();
-        _pic.Image = (Bitmap)rendered.Clone();
-
-        if (_detecting && detections.Length > 0)
+        if (_disposed || IsDisposed)
         {
-            _app.Engine.ProcessDetections(_cam.Id, _cam.Name, bmp, detections);
+            bmp.Dispose();
+            return;
         }
 
-        bmp.Dispose();
+        // Drop frame nếu đang xử lý frame trước (giảm lag)
+        if (Interlocked.Exchange(ref _processing, 1) == 1)
+        {
+            bmp.Dispose();
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ProcessFrameAsync(bmp);
+            }
+            catch
+            {
+                bmp.Dispose();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _processing, 0);
+            }
+        });
+    }
+
+    private async Task ProcessFrameAsync(Bitmap bmp)
+    {
+        var nowTick = Stopwatch.GetTimestamp();
+        var canUiUpdate = (nowTick - Interlocked.Read(ref _lastUiTick)) >= UiIntervalTicks;
+
+        Detection[] dets = Array.Empty<Detection>();
+        Bitmap displayBmp = bmp; // mặc định dùng luôn bmp để tránh clone thừa
+
+        if (_detecting)
+        {
+            await InferenceGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                dets = _app.Detector.Detect(bmp);
+                // Render bbox lên bitmap mới
+                displayBmp = Render(bmp, dets);
+                // bmp không dùng cho UI nữa → dispose
+                bmp.Dispose();
+
+                if (dets.Length > 0)
+                {
+                    // Engine có thể lưu snapshot/clip → chạy luôn ở background (đang ở background rồi)
+                    _app.Engine.ProcessDetections(_cam.Id, _cam.Name, displayBmp, dets);
+                }
+            }
+            finally
+            {
+                InferenceGate.Release();
+            }
+        }
+
+        if (!canUiUpdate)
+        {
+            // Không update UI thì phải dispose bitmap giữ
+            if (!ReferenceEquals(displayBmp, bmp))
+                displayBmp.Dispose();
+            else
+                bmp.Dispose();
+
+            return;
+        }
+
+        Interlocked.Exchange(ref _lastUiTick, nowTick);
+
+        // Update UI (nhẹ): chỉ set Image
+        this.BeginInvoke((Action)(() =>
+        {
+            if (_disposed || IsDisposed)
+            {
+                displayBmp.Dispose();
+                return;
+            }
+
+            var old = _pic.Image;
+            _pic.Image = displayBmp;
+            old?.Dispose();
+        }));
     }
 
     private static Bitmap Render(Bitmap src, Detection[] dets)

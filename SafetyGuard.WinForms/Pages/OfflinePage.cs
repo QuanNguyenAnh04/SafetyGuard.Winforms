@@ -25,19 +25,12 @@ public sealed class OfflinePage : UserControl
     }
 
     private void BuildUI()
-    {
+    {   
+        
         var card = ControlFactory.Card();
         card.Dock = DockStyle.Fill;
         card.Padding = new Padding(16);
         Controls.Add(card);
-
-        var title = ControlFactory.Title("Offline Analysis", 14, true);
-        title.Location = new Point(16, 16);
-        card.Controls.Add(title);
-
-        var hint = ControlFactory.Muted("Upload video/image → run detection → results appear in Violation History.", 9);
-        hint.Location = new Point(18, 46);
-        card.Controls.Add(hint);
 
         var drop = new Guna2Panel
         {
