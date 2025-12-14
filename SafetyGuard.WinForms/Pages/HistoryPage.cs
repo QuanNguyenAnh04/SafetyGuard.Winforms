@@ -43,11 +43,15 @@ public sealed class HistoryPage : UserControl
 
         var card = ControlFactory.Card();
         card.Dock = DockStyle.Fill;
-        card.Padding = new Padding(16);
+        card.Padding = new Padding(5);
+        
         root.Controls.Add(card);
 
+        SetupGrid();
+        card.Controls.Add(_grid);
+
         // Filter bar
-        var bar = new Panel { Dock = DockStyle.Top, Height = 54 };
+        var bar = new Panel { Dock = DockStyle.Top, Height = 50, };
         card.Controls.Add(bar);
 
         _search.Location = new Point(6, 8);
@@ -97,8 +101,8 @@ public sealed class HistoryPage : UserControl
         bar.Controls.Add(btnXlsx);
 
         // Grid
-        SetupGrid();
-        card.Controls.Add(_grid);
+        
+
 
         _search.TextChanged += (_, _) => RefreshData();
         _cbType.SelectedIndexChanged += (_, _) => RefreshData();
@@ -115,7 +119,7 @@ public sealed class HistoryPage : UserControl
         _grid.ThemeStyle.HeaderStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
         _grid.ThemeStyle.RowsStyle.ForeColor = AppColors.TitleText;
         _grid.ThemeStyle.RowsStyle.Font = new Font("Segoe UI", 9);
-        _grid.ThemeStyle.RowsStyle.Height = 44;
+        _grid.ThemeStyle.RowsStyle.Height = 48;
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.MultiSelect = false;
