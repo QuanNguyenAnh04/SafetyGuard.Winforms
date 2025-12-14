@@ -1,8 +1,9 @@
 ﻿namespace SafetyGuard.WinForms.Models;
 
-public sealed class Detection
+public class Detection
 {
-    public ViolationType Type { get; set; }
-    public BoundingBox Box { get; set; }
-    public float Confidence { get; set; }
+    public ViolationType Type { get; init; }
+    public BoundingBox Box { get; init; } = new BoundingBox();
+    public float Confidence { get; init; }
 }
+

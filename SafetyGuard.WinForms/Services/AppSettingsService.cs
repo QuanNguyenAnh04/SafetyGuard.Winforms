@@ -22,6 +22,7 @@ public sealed class AppSettingsService
         Current = LoadOrCreate();
     }
 
+
     public void Save(AppSettings settings)
     {
         Current = settings;
