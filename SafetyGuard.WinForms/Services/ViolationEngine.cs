@@ -35,7 +35,8 @@ public sealed class ViolationEngine
         string cameraId,
         string cameraName,
         Bitmap currentFrameForEvidence,
-        Detection[] detections)
+        Detection[] detections,
+        bool forceCreate = false)
     {
         var now = DateTime.UtcNow;
         var s = _settings.Current;

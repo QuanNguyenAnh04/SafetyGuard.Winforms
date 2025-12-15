@@ -20,15 +20,46 @@ public sealed class OfflineAnalyzer
         _logs = logs;
     }
 
+    // ===== Backward compatible API (giữ cho code cũ) =====
     public void AnalyzeImage(string path, string cameraId, string cameraName)
+        => AnalyzeImage(path, cameraId, cameraName, onFrame: null, forceCreate: true);
+
+    public void AnalyzeVideo(string path, string cameraId, string cameraName, int sampleEveryNFrames = 10, Action<int, int>? progress = null)
+        => AnalyzeVideo(path, cameraId, cameraName, sampleEveryNFrames, progress, onFrame: null, forceCreate: true);
+
+    // ===== New API (dùng cho UI preview + event log) =====
+
+    public void AnalyzeImage(
+        string path,
+        string cameraId,
+        string cameraName,
+        Action<Bitmap, Detection[]>? onFrame,
+        bool forceCreate = true)
     {
         using var bmp = (Bitmap)Bitmap.FromFile(path);
         var detections = _detector.Detect(bmp);
-        _engine.ProcessDetections(cameraId, cameraName, bmp, detections);
+
+        // ✅ Lưu event vào DB qua engine (forceCreate để ảnh đơn vẫn tạo record)
+        _engine.ProcessDetections(cameraId, cameraName, bmp, detections, forceCreate: true);
+
+        // ✅ push frame + detection ra UI
+        if (onFrame != null)
+        {
+            using var clone = (Bitmap)bmp.Clone();
+            onFrame(clone, detections);
+        }
+
         _logs.Info($"Offline image analyzed: {path} det={detections.Length}");
     }
 
-    public void AnalyzeVideo(string path, string cameraId, string cameraName, int sampleEveryNFrames = 10, Action<int, int>? progress = null)
+    public void AnalyzeVideo(
+        string path,
+        string cameraId,
+        string cameraName,
+        int sampleEveryNFrames,
+        Action<int, int>? progress,
+        Action<Bitmap, Detection[]>? onFrame,
+        bool forceCreate = true)
     {
         using var cap = new VideoCapture(path);
         if (!cap.IsOpened())
@@ -46,11 +77,34 @@ public sealed class OfflineAnalyzer
         while (cap.Read(mat) && !mat.Empty())
         {
             idx++;
-            if (idx % sampleEveryNFrames != 0) continue;
+
+            // sample frame
+            if (sampleEveryNFrames > 1 && (idx % sampleEveryNFrames != 0))
+            {
+                progress?.Invoke(idx, total);
+                continue;
+            }
 
             using var bmp = BitmapConverter.ToBitmap(mat);
             var detections = _detector.Detect(bmp);
-            _engine.ProcessDetections(cameraId, cameraName, bmp, detections);
+            _logs.Info($"[OFFLINE] dets={detections.Length}");
+            if (detections.Length > 0)
+            {
+                var top = detections.OrderByDescending(x => x.Confidence).Take(3)
+                    .Select(x => $"{x.Type}:{x.Confidence:0.00}");
+                _logs.Info("[OFFLINE] top=" + string.Join(", ", top));
+            }
+
+
+            // ✅ Lưu event vào DB
+            _engine.ProcessDetections(cameraId, cameraName, bmp, detections, forceCreate: forceCreate);
+
+            // ✅ UI preview + event log
+            if (onFrame != null)
+            {
+                using var clone = (Bitmap)bmp.Clone();
+                onFrame(clone, detections);
+            }
 
             progress?.Invoke(idx, total);
         }

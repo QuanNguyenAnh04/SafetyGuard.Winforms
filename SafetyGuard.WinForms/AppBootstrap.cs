@@ -51,7 +51,7 @@ public sealed class AppBootstrap
         var export = new ExportService(logs);
 
         // demo detector (sau này thay OnnxDetector)
-        IDetector detector = new DummyDetector(settings, logs);
+        IDetector detector = new DualOnnxDetector(settings, logs);
 
         var engine = new ViolationEngine(settings, repo, evidence, logs);
         var offline = new OfflineAnalyzer(detector, engine, logs);
