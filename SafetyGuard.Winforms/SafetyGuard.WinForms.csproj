@@ -11,6 +11,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="Assets\Models\YOLOv11_ppe.onnx" />
+    <None Remove="Assets\Models\YOLOv11_smoke.onnx" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\Models\YOLOv11_ppe.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\Models\YOLOv11_smoke.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ClosedXML" Version="0.105.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Guna.UI2.WinForms" Version="2.0.4.7" />
