@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
@@ -8,8 +9,6 @@ using LiveChartsCore.SkiaSharpView;
 using LiveChartsCore.SkiaSharpView.WinForms;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.UI;
-using LiveChartsCore.Measure;
-using Timer = System.Windows.Forms.Timer;
 
 namespace SafetyGuard.WinForms.Pages;
 
@@ -17,316 +16,305 @@ public sealed class DashboardPage : UserControl
 {
     private readonly AppBootstrap _app;
 
-    private Label _kpiTotal = null!;
-    private Label _kpiCritical = null!;
-    private Label _kpiRate = null!;
-    private Label _kpiCams = null!;
+    private FlowLayoutPanel _root = null!;
+    private Label _lblTotal = null!;
+    private Label _lblCritical = null!;
+    private Label _lblRate = null!;
+    private Label _lblActive = null!;
 
+    private ComboBox _cbRange = null!;
     private CartesianChart _trend = null!;
     private PieChart _pie = null!;
+    private Label _trendNoData = null!;
+    private Label _pieNoData = null!;
 
-    // keep last data to re-apply on resize without recompute
-    private ISeries[] _trendSeries = Array.Empty<ISeries>();
-    private ISeries[] _pieSeries = Array.Empty<ISeries>();
-    private readonly Timer _chartDebounce = new() { Interval = 120 };
+    private readonly Axis _trendXAxis = new();
+    private readonly Axis _trendYAxis = new();
 
     public DashboardPage(AppBootstrap app)
     {
         _app = app;
+
         Dock = DockStyle.Fill;
         BackColor = AppColors.ContentBg;
 
-        BuildUI();
-        ConfigureCharts();
-        RefreshMetrics();
+        BuildUi();
+        Hook();
 
-        _app.Violations.OnChanged += () => this.SafeInvoke(RefreshMetrics);
-        _app.Settings.OnChanged += _ => this.SafeInvoke(RefreshMetrics);
+        RefreshMetrics();
     }
 
-    private void BuildUI()
+    private void Hook()
     {
-        var tblMain = new TableLayoutPanel
+        _app.Violations.OnChanged += () =>
+        {
+            if (!IsHandleCreated) return;
+            BeginInvoke(new Action(RefreshMetrics));
+        };
+    }
+
+    private void BuildUi()
+    {
+        _root = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(20),
-            ColumnCount = 1,
-            RowCount = 2,
-            BackColor = Color.Transparent
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(18),
+            BackColor = AppColors.ContentBg
         };
-        tblMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        tblMain.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Controls.Add(tblMain);
+        Controls.Add(_root);
 
-        var tblKpi = new TableLayoutPanel
+        // KPI row
+        var kpiRow = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 2,
-            RowCount = 2,
-            BackColor = Color.Transparent
+            ColumnCount = 4,
+            RowCount = 1,
+            Width = 1100,
+            Height = 110
         };
-        tblKpi.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        tblKpi.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        tblKpi.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        tblKpi.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        tblMain.Controls.Add(tblKpi, 0, 0);
+        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
 
-        tblKpi.Controls.Add(KpiCard("TOTAL VIOLATIONS (TODAY)", out _kpiTotal, "↓ demo", AppColors.BlueTint, "i"), 0, 0);
-        tblKpi.Controls.Add(KpiCard("CRITICAL WARNINGS", out _kpiCritical, "↑ demo", AppColors.RedTint, "!"), 1, 0);
-        tblKpi.Controls.Add(KpiCard("SAFETY RATE", out _kpiRate, "Target: 98%", AppColors.GreenTint, "✓"), 0, 1);
-        tblKpi.Controls.Add(KpiCard("ACTIVE CAMERAS", out _kpiCams, "All Systems", AppColors.AmberTint, "🎥"), 1, 1);
+        kpiRow.Controls.Add(BuildKpiCard("TOTAL VIOLATIONS (TODAY)", out _lblTotal), 0, 0);
+        kpiRow.Controls.Add(BuildKpiCard("CRITICAL ALERTS", out _lblCritical), 1, 0);
+        kpiRow.Controls.Add(BuildKpiCard("COMPLIANCE RATE", out _lblRate), 2, 0);
+        kpiRow.Controls.Add(BuildKpiCard("ACTIVE CAMERAS", out _lblActive), 3, 0);
 
-        var tblCharts = new TableLayoutPanel
+        _root.Controls.Add(kpiRow);
+
+        // charts row
+        var charts = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 1,
-            BackColor = Color.Transparent,
-            Margin = new Padding(0, 12, 0, 0)
+            Width = 1100,
+            Height = 360,
+            Margin = new Padding(0, 14, 0, 0)
         };
-        tblCharts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
-        tblCharts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-        tblMain.Controls.Add(tblCharts, 0, 1);
+        charts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        charts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
 
-        var cardTrend = ControlFactory.Card();
-        cardTrend.Dock = DockStyle.Fill;
-        tblCharts.Controls.Add(cardTrend, 0, 0);
-        BuildTrendCard(cardTrend);
+        charts.Controls.Add(BuildTrendCard(), 0, 0);
+        charts.Controls.Add(BuildPieCard(), 1, 0);
 
-        var cardPie = ControlFactory.Card();
-        cardPie.Dock = DockStyle.Fill;
-        tblCharts.Controls.Add(cardPie, 1, 0);
-        BuildPieCard(cardPie);
+        _root.Controls.Add(charts);
 
-        // ✅ force charts to re-layout when the page resizes (fix "drift")
-        //Resize += (_, _) => ForceChartsLayout();
+        ConfigureCharts();
+    }
 
-        _chartDebounce.Tick += (_, _) =>
+    private Control BuildKpiCard(string title, out Label value)
+    {
+        var card = new Guna2ShadowPanel
         {
-            _chartDebounce.Stop();
-            ApplyChartsLayout();
+            Radius = 16,
+            FillColor = Color.White,
+            ShadowColor = Color.FromArgb(210, 220, 235),
+            ShadowDepth = 2,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 12, 0),
+            Padding = new Padding(16, 14, 16, 14)
         };
 
-
-    }
-
-    private void RequestChartsLayout()
-    {
-        _chartDebounce.Stop();
-        _chartDebounce.Start();
-    }
-
-    private void ApplyChartsLayout()
-    {
-        if (_trend != null && _trendSeries.Length > 0) _trend.Series = _trendSeries;
-        if (_pie != null && _pieSeries.Length > 0) _pie.Series = _pieSeries;
-
-        _trend?.Update();
-        _pie?.Update();
-    }
-
-
-
-    private Guna2ShadowPanel KpiCard(string title, out Label value, string sub, Color tint, string icon)
-    {
-        var card = ControlFactory.Card();
-        card.Dock = DockStyle.Fill;
-
-        var t = ControlFactory.Muted(title, 9, true);
-        t.Location = new Point(4, 4);
-        card.Controls.Add(t);
+        card.Controls.Add(ControlFactory.Muted(title, 9, true));
 
         value = new Label
         {
-            Text = "0",
+            Text = "—",
             AutoSize = true,
+            Font = new Font("Segoe UI", 22, FontStyle.Bold),
             ForeColor = AppColors.TitleText,
-            Font = new Font("Segoe UI", 28, FontStyle.Bold),
-            Location = new Point(2, 28)
+            Location = new Point(0, 34)
         };
         card.Controls.Add(value);
-
-        var s = new Label
-        {
-            Text = sub,
-            AutoSize = true,
-            ForeColor = AppColors.MutedText,
-            Font = new Font("Segoe UI", 9),
-            Location = new Point(4, 78)
-        };
-        card.Controls.Add(s);
-
-        var ib = ControlFactory.IconBox(tint);
-        ib.Location = new Point(card.Width - 60, 18);
-        ib.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        card.Controls.Add(ib);
-
-        ib.Controls.Add(new Label
-        {
-            Text = icon,
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 14, FontStyle.Bold),
-            ForeColor = AppColors.TitleText
-        });
 
         return card;
     }
 
-    private void BuildTrendCard(Guna2ShadowPanel card)
+    private Control BuildTrendCard()
     {
+        var card = new Guna2ShadowPanel
+        {
+            Radius = 16,
+            FillColor = Color.White,
+            ShadowColor = Color.FromArgb(210, 220, 235),
+            ShadowDepth = 2,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 12, 0),
+            Padding = new Padding(16)
+        };
+
         var header = new Panel { Dock = DockStyle.Top, Height = 44 };
         card.Controls.Add(header);
 
-        var lbl = ControlFactory.Title("7-Day Trends", 12, true);
-        lbl.Location = new Point(4, 10);
-        header.Controls.Add(lbl);
+        var title = ControlFactory.Muted("Violations Trend", 10, true);
+        title.Location = new Point(6, 10);
+        header.Controls.Add(title);
 
-        var cb = new Guna2ComboBox
+        _cbRange = new ComboBox
         {
             Width = 140,
             Height = 32,
-            BorderRadius = 10,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            DrawMode = DrawMode.OwnerDrawFixed,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        cb.Items.AddRange(new object[] { "Last 7 Days", "Last 30 Days" });
-        cb.SelectedIndex = 0;
-        header.Controls.Add(cb);
-        header.Resize += (_, _) => cb.Location = new Point(header.Width - cb.Width - 6, 6);
-        cb.Location = new Point(header.Width - cb.Width - 6, 6);
+        _cbRange.Items.AddRange(new object[] { "Last 7 Days", "Last 30 Days" });
+        _cbRange.SelectedIndex = 0;
+        _cbRange.SelectedIndexChanged += (_, _) => RefreshMetrics();
+        header.Controls.Add(_cbRange);
 
-        _trend = new CartesianChart
+        header.Resize += (_, _) => _cbRange.Location = new Point(header.Width - _cbRange.Width - 6, 8);
+        _cbRange.Location = new Point(header.Width - _cbRange.Width - 6, 8);
+
+        var body = new Panel { Dock = DockStyle.Fill };
+        card.Controls.Add(body);
+
+        _trend = new CartesianChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        body.Controls.Add(_trend);
+
+        _trendNoData = new Label
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.Transparent
+            TextAlign = ContentAlignment.MiddleCenter,
+            Text = "No data",
+            ForeColor = AppColors.MutedText,
+            Font = new Font("Segoe UI", 11, FontStyle.Italic),
+            BackColor = Color.Transparent,
+            Visible = false
         };
-        card.Controls.Add(_trend);
+        body.Controls.Add(_trendNoData);
+        _trendNoData.BringToFront();
 
-        // ✅ important: update layout when chart itself resizes
-        //_trend.SizeChanged += (_, _) => ForceChartsLayout();
-        Resize += (_, _) => RequestChartsLayout();
-
+        return card;
     }
 
-    private void BuildPieCard(Guna2ShadowPanel card)
+    private Control BuildPieCard()
     {
+        var card = new Guna2ShadowPanel
+        {
+            Radius = 16,
+            FillColor = Color.White,
+            ShadowColor = Color.FromArgb(210, 220, 235),
+            ShadowDepth = 2,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            Padding = new Padding(16)
+        };
+
         var header = new Panel { Dock = DockStyle.Top, Height = 44 };
         card.Controls.Add(header);
 
-        var lbl = ControlFactory.Title("Violation Types", 12, true);
-        lbl.Location = new Point(4, 10);
-        header.Controls.Add(lbl);
+        var title = ControlFactory.Muted("By Violation Type", 10, true);
+        title.Location = new Point(6, 10);
+        header.Controls.Add(title);
 
-        _pie = new PieChart
+        var body = new Panel { Dock = DockStyle.Fill };
+        card.Controls.Add(body);
+
+        _pie = new PieChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        body.Controls.Add(_pie);
+
+        _pieNoData = new Label
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.Transparent
+            TextAlign = ContentAlignment.MiddleCenter,
+            Text = "No data",
+            ForeColor = AppColors.MutedText,
+            Font = new Font("Segoe UI", 11, FontStyle.Italic),
+            BackColor = Color.Transparent,
+            Visible = false
         };
-        card.Controls.Add(_pie);
+        body.Controls.Add(_pieNoData);
+        _pieNoData.BringToFront();
 
-        //_pie.SizeChanged += (_, _) => ForceChartsLayout();
-        Resize += (_, _) => RequestChartsLayout();
-
+        return card;
     }
 
     private void ConfigureCharts()
     {
-        // ===== Trend chart layout =====
-        _trend.LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden;
+        _trendXAxis.LabelsRotation = 0;
+        _trendYAxis.MinLimit = 0;
 
-        _trend.XAxes = new Axis[]
-        {
-            new Axis
-            {
-                // keep labels tight
-                LabelsRotation = 0,
-                SeparatorsPaint = null,
-                TextSize = 12
-            }
-        };
+        _trend.XAxes = new[] { _trendXAxis };
+        _trend.YAxes = new[] { _trendYAxis };
 
-        _trend.YAxes = new Axis[]
-        {
-            new Axis
-            {
-                SeparatorsPaint = null,
-                TextSize = 12
-            }
-        };
-
-        // draw margin to prevent "floating" plot when resizing
-        _trend.DrawMargin = new LiveChartsCore.Measure.Margin(30, 10, 10, 30);
-        _trend.AnimationsSpeed = TimeSpan.FromMilliseconds(250);
-
-        // ===== Pie chart layout =====
-        _pie.LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden;
-        _pie.InitialRotation = -90;
-        _pie.AnimationsSpeed = TimeSpan.FromMilliseconds(250);
-
-        // give a bit padding so pie doesn't appear "stuck" to top-left when wide
-        _pie.Padding = new Padding(10);
-        //_trend.AnimationsSpeed = TimeSpan.Zero;
-        //_pie.AnimationsSpeed = TimeSpan.Zero;
-
-    }
-
-
-    private void RefreshMetrics()
-    {
-        var all = _app.Violations.All();
-        var today = DateTime.UtcNow.Date;
-
-        var todayItems = all.Where(v => v.TimeUtc.Date == today).ToList();
-        var critical = todayItems.Count(v => v.Level == ViolationLevel.Critical);
-
-        var cams = _app.Settings.Current.Cameras.Count(c => c.Enabled);
-        var totalToday = todayItems.Count;
-
-        var safetyRate = Math.Max(0, 100 - totalToday * 2);
-
-        _kpiTotal.Text = totalToday.ToString();
-        _kpiCritical.Text = critical.ToString();
-        _kpiRate.Text = $"{safetyRate}%";
-        _kpiCams.Text = $"{cams}/{_app.Settings.Current.Cameras.Count}";
-
-        // trend 7 days
-        var days = Enumerable.Range(0, 7).Select(i => today.AddDays(-6 + i)).ToList();
-        var counts = days.Select(d => all.Count(v => v.TimeUtc.Date == d)).Select(x => (double)x).ToArray();
-
-        _trendSeries = new ISeries[]
+        _trend.Series = new ISeries[]
         {
             new LineSeries<double>
             {
-                Values = counts,
-                GeometrySize = 10,
-                Fill = null, // không fill để không bị “tràn” cảm giác lệch khi wide
+                Values = new double[] { 0 },
+                GeometrySize = 10
             }
         };
-        _trend.Series = _trendSeries;
 
-        // pie by type (last 7 days)
-        var start = today.AddDays(-6);
-        var last7 = all.Where(v => v.TimeUtc.Date >= start).ToList();
-        var byType = Enum.GetValues(typeof(ViolationType)).Cast<ViolationType>()
-            .Select(t => (t, c: last7.Count(v => v.Type == t)))
-            .Where(x => x.c > 0)
+        _pie.Series = Array.Empty<ISeries>();
+    }
+
+    private void RefreshMetrics()
+    {
+        var days = _cbRange?.SelectedIndex == 1 ? 30 : 7;
+
+        var todayUtc = DateTime.UtcNow.Date;
+        var fromUtc = todayUtc.AddDays(-(days - 1));
+        var toUtc = todayUtc.AddDays(1); // exclusive end for today
+
+        // ✅ SQLite repo: dùng Query thay vì All()
+        var items = _app.Violations.Query(fromUtc, toUtc, limit: 200000);
+
+        var todayItems = items.Where(v => v.TimeUtc.ToUniversalTime().Date == todayUtc).ToList();
+
+        _lblTotal.Text = todayItems.Count.ToString();
+
+        var criticalToday = todayItems.Count(v => v.Level == ViolationLevel.Critical);
+        _lblCritical.Text = criticalToday.ToString();
+
+        // compliance rate demo: 100% - (violation/tổng giả lập)
+        var totalChecks = Math.Max(1, todayItems.Count + 50);
+        var compliance = Math.Max(0, 100 - (int)Math.Round(todayItems.Count * 100.0 / totalChecks));
+        _lblRate.Text = compliance + "%";
+
+        var camCount = _app.Settings.Current.Cameras?.Count ?? 0;
+        _lblActive.Text = $"{camCount}/{camCount}";
+
+        // trend counts by day
+        var dayCounts = items
+            .GroupBy(v => v.TimeUtc.ToUniversalTime().Date)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        var labels = Enumerable.Range(0, days)
+            .Select(i => fromUtc.AddDays(i).Date)
             .ToList();
 
-        if (byType.Count == 0) byType.Add((ViolationType.NoHelmet, 1));
+        var values = labels.Select(d => (double)(dayCounts.TryGetValue(d, out var c) ? c : 0)).ToArray();
 
-        _pieSeries = byType.Select(x => new PieSeries<double>
+        // Lấy series đầu tiên, ép kiểu an toàn
+        var line = _trend.Series.FirstOrDefault() as LineSeries<double>;
+
+        // Chỉ gán nếu lấy được series
+        if (line != null)
         {
-            Values = new double[] { x.c },
-            Name = x.t.ToString(),
-            InnerRadius = 60
-        }).Cast<ISeries>().ToArray();
+            line.Values = values;
+        }
 
-        _pie.Series = _pieSeries;
+        _trendXAxis.Labels = labels.Select(d => d.ToString("MM/dd")).ToArray();
 
-        RequestChartsLayout();
+        _trendNoData.Visible = values.All(v => v <= 0);
 
+        // pie by type
+        var byType = items.GroupBy(v => v.Type)
+            .Select(g => new { Type = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .ToList();
+
+        _pieNoData.Visible = byType.Count == 0;
+
+        _pie.Series = byType.Select(x =>
+            (ISeries)new PieSeries<double>
+            {
+                Values = new double[] { x.Count },
+                Name = x.Type.ToString()
+            }).ToArray();
     }
 }

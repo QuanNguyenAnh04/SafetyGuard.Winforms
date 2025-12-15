@@ -47,7 +47,7 @@ public sealed class HistoryPage : UserControl
         var card = ControlFactory.Card();
         card.Dock = DockStyle.Fill;
         card.Padding = new Padding(5);
-        
+
         root.Controls.Add(card);
 
         SetupGrid();
@@ -179,28 +179,36 @@ public sealed class HistoryPage : UserControl
 
     private void RefreshData()
     {
-        var all = _app.Violations.All();
+        // 1. Lấy giá trị ViolationType từ ComboBox (nếu chọn index > 0)
+        ViolationType? selectedType = null;
+        if (_cbType.SelectedIndex > 0 && Enum.TryParse<ViolationType>(_cbType.SelectedItem?.ToString(), out var t))
+        {
+            selectedType = t;
+        }
 
-        var q = all.AsEnumerable();
+        // 2. Lấy giá trị ViolationStatus từ ComboBox (nếu chọn index > 0)
+        ViolationStatus? selectedStatus = null;
+        if (_cbStatus.SelectedIndex > 0 && Enum.TryParse<ViolationStatus>(_cbStatus.SelectedItem?.ToString(), out var st))
+        {
+            selectedStatus = st;
+        }
 
-        var from = _from.Value.Date.ToUniversalTime();
-        var to = _to.Value.Date.AddDays(1).ToUniversalTime();
+        // 3. Gọi hàm Query với các tham số đã chuẩn bị
+        // Lưu ý: fromUtc và toUtc cần lấy Value rồi chuyển sang UTC
+        var rows = _app.Violations.Query(
+            fromUtc: _from.Value.Date.ToUniversalTime(),
+            toUtc: _to.Value.Date.AddDays(1).ToUniversalTime(), // Cộng thêm 1 ngày để lấy hết data trong ngày 'to'
+            search: _search.Text.Trim(),
+            type: selectedType,
+            status: selectedStatus,
+            limit: 5000
+        );
 
-        q = q.Where(v => v.TimeUtc >= from && v.TimeUtc < to);
-
-        var s = _search.Text.Trim().ToLowerInvariant();
-        if (!string.IsNullOrWhiteSpace(s))
-            q = q.Where(v => v.CameraName.ToLowerInvariant().Contains(s) || v.Type.ToString().ToLowerInvariant().Contains(s));
-
-        if (_cbType.SelectedIndex > 0 && Enum.TryParse<ViolationType>(_cbType.SelectedItem!.ToString(), out var t))
-            q = q.Where(v => v.Type == t);
-
-        if (_cbStatus.SelectedIndex > 0 && Enum.TryParse<ViolationStatus>(_cbStatus.SelectedItem!.ToString(), out var st))
-            q = q.Where(v => v.Status == st);
-
-        _current = q.OrderByDescending(v => v.TimeUtc).ToList();
+        // 4. Gán kết quả vào biến _current và hiển thị lên Grid
+        _current = rows.ToList();
         _grid.DataSource = _current;
     }
+
 
     private void Export(bool excel)
     {

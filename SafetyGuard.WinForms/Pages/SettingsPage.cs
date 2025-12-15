@@ -41,6 +41,7 @@ public sealed class SettingsPage : UserControl
 
     private Guna2Panel _cardRules = null!;
     private TableLayoutPanel _rulesGrid = null!;
+    private Label _lblSubtitle = null!;
 
     private Guna2Panel _cardLogic = null!;
     private Guna2NumericUpDown _numMinFrames = null!;
@@ -152,7 +153,7 @@ public sealed class SettingsPage : UserControl
 
         var sub = new Label
         {
-            Text = "Connected: 4 Cameras | System Status: Optimal",
+            Text = GetSystemSubtitle(),
             AutoSize = true,
             Font = new Font("Segoe UI", 10),
             ForeColor = AppColors.MutedText,
@@ -278,17 +279,13 @@ public sealed class SettingsPage : UserControl
 
             if (cams.Count == 0)
             {
-                cams.Add(new CameraConfig { Id = "CAM-01", Name = "CAM-01: Main Entrance", RtspUrl = "rtsp://192.168.1.10:554/stream1", Enabled = true });
-                cams.Add(new CameraConfig { Id = "CAM-04", Name = "CAM-04: Back Alley", RtspUrl = "rtsp://192.168.1.14:554/stream1", Enabled = true });
+                _cameraList.Controls.Add(CreateEmptyCamerasRow());
+                return;
             }
 
             foreach (var cam in cams)
             {
-                var status = cam.Id.EndsWith("01", StringComparison.OrdinalIgnoreCase)
-                    ? CameraStatus.Connected
-                    : CameraStatus.Offline;
-
-                var row = CreateCameraRow(cam, status);
+                var row = CreateCameraRow(cam);
                 _cameraList.Controls.Add(row);
             }
         }
@@ -300,7 +297,7 @@ public sealed class SettingsPage : UserControl
         ResizeCameraRows();
     }
 
-    private Control CreateCameraRow(CameraConfig cam, CameraStatus status)
+    private Control CreateCameraRow(CameraConfig cam)
     {
         var row = new Guna2Panel
         {
@@ -318,7 +315,7 @@ public sealed class SettingsPage : UserControl
         var iconBox = new Guna2Panel
         {
             BorderRadius = 10,
-            FillColor = status == CameraStatus.Connected ? Color.FromArgb(232, 250, 241) : Color.FromArgb(255, 235, 235),
+            FillColor = cam.Enabled ? Color.FromArgb(232, 250, 241) : Color.FromArgb(243, 244, 246),
             Size = new Size(44, 44),
             Location = new Point(0, 4)
         };
@@ -326,7 +323,7 @@ public sealed class SettingsPage : UserControl
 
         iconBox.Controls.Add(new Label
         {
-            Text = status == CameraStatus.Connected ? "🎥" : "🚫",
+            Text = cam.Enabled ? "🎥" : "⏸",
             AutoSize = true,
             Font = new Font("Segoe UI", 14),
             Location = new Point(11, 9)
@@ -352,12 +349,12 @@ public sealed class SettingsPage : UserControl
 
         var badge = new Guna2Button
         {
-            Text = status == CameraStatus.Connected ? "Connected" : "Offline",
+            Text = cam.Enabled ? "Enabled" : "Disabled",
             BorderRadius = 10,
             Height = 26,
             Width = 96,
-            FillColor = status == CameraStatus.Connected ? Color.FromArgb(232, 250, 241) : Color.FromArgb(255, 235, 235),
-            ForeColor = status == CameraStatus.Connected ? Color.FromArgb(19, 120, 70) : Color.FromArgb(180, 40, 40),
+            FillColor = cam.Enabled ? Color.FromArgb(232, 250, 241) : Color.FromArgb(243, 244, 246),
+            ForeColor = cam.Enabled ? Color.FromArgb(19, 120, 70) : AppColors.MutedText,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Enabled = false,
             Anchor = AnchorStyles.Top | AnchorStyles.Right
@@ -946,9 +943,14 @@ public sealed class SettingsPage : UserControl
         var days = s.RetentionDays;
         _ = Task.Run(() =>
         {
-            try { _app.Violations.RemoveOlderThan(days); }
+            try
+            {
+                var cutoff = DateTime.UtcNow.AddDays(-days);
+                _app.Violations.DeleteOlderThanUtc(cutoff);
+            }
             catch { /* ignore */ }
         });
+
     }
 
     private void ReloadAll()
@@ -1195,4 +1197,39 @@ public sealed class SettingsPage : UserControl
         typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.SetValue(c, true, null);
     }
+
+    private string GetSystemSubtitle()
+    {
+        var s = _app.Settings.Current;
+        var camCount = s.Cameras?.Count ?? 0;
+        return $"Connected: {camCount} Cameras | System Status: Optimal";
+    }
+
+    private Control CreateEmptyCamerasRow()
+    {
+        var p = new Guna.UI2.WinForms.Guna2Panel
+        {
+            BorderRadius = 12,
+            FillColor = Color.FromArgb(248, 250, 252),
+            Height = 62,
+            Width = 920,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(14, 10, 14, 10)
+        };
+        p.ShadowDecoration.Enabled = false;
+
+        p.Controls.Add(new Label
+        {
+            Text = "No cameras configured yet. Click “Add Camera” to create one.",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 10, FontStyle.Italic),
+            ForeColor = AppColors.MutedText,
+            Location = new Point(10, 18)
+        });
+
+        return p;
+    }
+
+
+
 }

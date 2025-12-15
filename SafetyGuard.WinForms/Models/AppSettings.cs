@@ -24,8 +24,8 @@ public sealed class AppSettings
     public int RetentionDays { get; set; } = 30;
 
     // Notification (demo)
-    public bool EnableNotifications { get; set; } = true;
+    public bool EnableNotifications { get; set; } = false;
 
     // Demo
-    public bool SeedDemoData { get; set; } = true;
+    public bool SeedDemoData { get; set; } = false;
 }

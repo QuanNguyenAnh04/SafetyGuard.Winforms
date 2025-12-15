@@ -8,10 +8,10 @@ namespace SafetyGuard.WinForms.Services;
 public sealed class EvidenceService
 {
     private readonly AppPaths _paths;
-    private readonly AppSettingsService _settings;
+    private readonly IAppSettingsService _settings;
     private readonly LogService _logs;
 
-    public EvidenceService(AppPaths paths, AppSettingsService settings, LogService logs)
+    public EvidenceService(AppPaths paths, IAppSettingsService settings, LogService logs)
     {
         _paths = paths;
         _settings = settings;
@@ -26,6 +26,7 @@ public sealed class EvidenceService
             Directory.CreateDirectory(s.EvidenceRoot);
             return s.EvidenceRoot;
         }
+
         Directory.CreateDirectory(_paths.EvidenceDir);
         return _paths.EvidenceDir;
     }
@@ -45,8 +46,8 @@ public sealed class EvidenceService
                 .Replace(" ", "_");
 
             var path = Path.Combine(dayDir, file);
-
             bmp.Save(path, System.Drawing.Imaging.ImageFormat.Jpeg);
+
             _logs.Info($"Snapshot saved: {path}");
             return path;
         }
@@ -57,18 +58,16 @@ public sealed class EvidenceService
         }
     }
 
-    // Optional clip: để đơn giản demo, bạn có thể mở rộng sau
     public string? SaveClipPlaceholder(ViolationRecord v)
     {
         if (!_settings.Current.SaveShortClip) return null;
-        // TODO: implement ring-buffer + VideoWriter if cần.
         return null;
     }
+
     private static string SanitizeFileName(string name)
     {
         foreach (var c in Path.GetInvalidFileNameChars())
             name = name.Replace(c, '_');
         return name;
     }
-
 }

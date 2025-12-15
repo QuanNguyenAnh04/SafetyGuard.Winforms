@@ -11,6 +11,7 @@ public sealed class AppPaths
     public string EvidenceDir { get; }
     public string SettingsPath { get; }
     public string ViolationsPath { get; }
+    public string DbPath => Path.Combine(DataDir, "safetyguard.db");
 
     public AppPaths()
     {

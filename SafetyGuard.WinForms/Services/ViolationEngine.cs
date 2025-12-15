@@ -8,8 +8,8 @@ namespace SafetyGuard.WinForms.Services;
 
 public sealed class ViolationEngine
 {
-    private readonly AppSettingsService _settings;
-    private readonly ViolationRepository _repo;
+    private readonly IAppSettingsService _settings;
+    private readonly IViolationRepository _repo;
     private readonly EvidenceService _evidence;
     private readonly LogService _logs;
 
@@ -19,12 +19,11 @@ public sealed class ViolationEngine
         public DateTime LastCreatedUtc = DateTime.MinValue;
     }
 
-    // key = cameraId + type
     private readonly ConcurrentDictionary<string, State> _state = new();
 
     public event Action<ViolationRecord>? OnViolationCreated;
 
-    public ViolationEngine(AppSettingsService settings, ViolationRepository repo, EvidenceService evidence, LogService logs)
+    public ViolationEngine(IAppSettingsService settings, IViolationRepository repo, EvidenceService evidence, LogService logs)
     {
         _settings = settings;
         _repo = repo;
@@ -41,17 +40,16 @@ public sealed class ViolationEngine
         var now = DateTime.UtcNow;
         var s = _settings.Current;
 
-        // filter by rules thresholds
-        var rules = s.Rules.Where(r => r.Enabled).ToDictionary(r => r.Type, r => r);
+        var rules = s.Rules
+            .Where(r => r.Enabled)
+            .ToDictionary(r => r.Type, r => r);
 
-        // reset counters for types not present (helps reduce spam)
         foreach (var rt in rules.Keys)
         {
             var key = $"{cameraId}:{rt}";
             _state.TryAdd(key, new State());
         }
 
-        // group by type (anti-spam by camera+type)
         var byType = detections
             .Where(d => rules.TryGetValue(d.Type, out var rule) && d.Confidence >= rule.ConfidenceThreshold)
             .GroupBy(d => d.Type)
@@ -84,13 +82,10 @@ public sealed class ViolationEngine
                         Confidence = best.Confidence
                     };
 
-                    // evidence
                     using (var clone = (Bitmap)currentFrameForEvidence.Clone())
-                    {
                         v.SnapshotPath = _evidence.SaveSnapshot(clone, v);
-                    }
-                    v.ClipPath = _evidence.SaveClipPlaceholder(v);
 
+                    v.ClipPath = _evidence.SaveClipPlaceholder(v);
 
                     st.LastCreatedUtc = now;
                     st.Consecutive = 0;
@@ -102,7 +97,6 @@ public sealed class ViolationEngine
             }
             else
             {
-                // decay / reset
                 st.Consecutive = Math.Max(0, st.Consecutive - 1);
             }
         }

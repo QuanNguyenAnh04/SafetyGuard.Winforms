@@ -7,13 +7,13 @@ namespace SafetyGuard.WinForms.Vision;
 
 public sealed class DummyDetector : IDetector
 {
-    private readonly AppSettingsService _settings;
+    private readonly IAppSettingsService _settings;
     private readonly LogService _logs;
     private readonly Random _rnd = new(3);
 
     public string Name => "DummyDetector (demo)";
 
-    public DummyDetector(AppSettingsService settings, LogService logs)
+    public DummyDetector(IAppSettingsService settings, LogService logs)
     {
         _settings = settings;
         _logs = logs;
@@ -22,7 +22,6 @@ public sealed class DummyDetector : IDetector
 
     public Detection[] Detect(Bitmap frame)
     {
-        // Fake detections: 0..3 objects
         var n = _rnd.Next(0, 4);
         var rules = _settings.Current.Rules;
 
