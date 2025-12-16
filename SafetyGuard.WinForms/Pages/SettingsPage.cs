@@ -388,10 +388,31 @@ public sealed class SettingsPage : UserControl
         row.Resize += (_, _) => LayoutRight();
         LayoutRight();
 
-        btnRefresh.Click += (_, _) =>
+        btnRefresh.Click += async (_, _) =>
         {
-            MessageBox.Show(this, "TODO: Test connection snapshot.\nRealtime page will try to connect using RTSP URL.", "Test", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            btnRefresh.Enabled = false;
+            var oldText = badge.Text;
+            badge.Text = "Testing...";
+            try
+            {
+                var ok = await TestRtspAsync(cam.RtspUrl, timeoutMs: 6000);
+
+                badge.Text = ok ? "Online" : "Offline";
+                badge.FillColor = ok ? Color.FromArgb(232, 250, 241) : Color.FromArgb(255, 235, 235);
+                badge.ForeColor = ok ? Color.FromArgb(19, 120, 70) : Color.FromArgb(160, 20, 20);
+            }
+            catch (Exception ex)
+            {
+                badge.Text = "Error";
+                MessageBox.Show(this, ex.Message, "RTSP Test Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnRefresh.Enabled = true;
+            }
         };
+
 
         btnEdit.Click += (_, _) =>
         {
@@ -1228,6 +1249,20 @@ public sealed class SettingsPage : UserControl
         });
 
         return p;
+    }
+    private Task<bool> TestRtspAsync(string url, int timeoutMs = 6000)
+    {
+        return Task.Run(() =>
+        {
+            // OpenCV sẽ dùng FFmpeg backend nếu có runtime
+            using var cap = new OpenCvSharp.VideoCapture();
+            cap.Open(url, OpenCvSharp.VideoCaptureAPIs.FFMPEG);
+            if (!cap.IsOpened()) return false;
+
+            using var frame = new OpenCvSharp.Mat();
+            // đọc được 1 frame là coi như stream OK
+            return cap.Read(frame) && !frame.Empty();
+        });
     }
 
 

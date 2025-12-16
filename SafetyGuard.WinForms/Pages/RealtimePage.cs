@@ -226,9 +226,14 @@ public sealed class RealtimePage : UserControl
         _cboCam.SelectedIndexChanged += (_, _) =>
         {
             if (_mode != ViewMode.Single) return;
-            var cam = cams[Math.Max(0, _cboCam.SelectedIndex)];
-            ShowSingle(cam);
+
+            var list = _app.Settings.Current.Cameras.Where(c => c.Enabled).ToList();
+            if (list.Count == 0) return;
+
+            var idx = Math.Max(0, Math.Min(_cboCam.SelectedIndex, list.Count - 1));
+            ShowSingle(list[idx]);
         };
+
 
         // Build grid (tối đa 4)
         BuildGridViews();
@@ -467,4 +472,19 @@ public sealed class RealtimePage : UserControl
 
         _events.ResumeLayout(true);
     }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (!Visible) return;
+
+        var list = _app.Settings.Current.Cameras.Where(c => c.Enabled).ToList();
+        _cboCam.Items.Clear();
+        foreach (var c in list) _cboCam.Items.Add(c.Name);
+        if (_cboCam.Items.Count > 0) _cboCam.SelectedIndex = 0;
+
+        BuildGridViews();
+        if (list.Count > 0) ShowSingle(list[0]);
+    }
+
 }
