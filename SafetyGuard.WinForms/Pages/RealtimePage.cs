@@ -16,6 +16,10 @@ public sealed class RealtimePage : UserControl
 
     private readonly AppBootstrap _app;
 
+    // Offline identifiers (match OfflinePage camId/camName)
+    private const string OfflineCameraId = "offline";
+    private const string OfflineCameraName = "Offline Import";
+
     // Right: events list
     private readonly FlowLayoutPanel _events = new()
     {
@@ -54,6 +58,7 @@ public sealed class RealtimePage : UserControl
     private Guna2ComboBox _cboCam = null!;
     private Guna2Button _btnSingle = null!;
     private Guna2Button _btnGrid = null!;
+    private Guna2Button _btnClearLive = null!;
 
     private ViewMode _mode = ViewMode.Single;
     private bool _detecting;
@@ -66,8 +71,26 @@ public sealed class RealtimePage : UserControl
 
         BuildUI();
 
-        // live events from engine
-        _app.Engine.OnViolationCreated += v => this.SafeInvoke(() => PushEventCard(v));
+        // live events from engine (✅ filter out Offline Import)
+        _app.Engine.OnViolationCreated += v => this.SafeInvoke(() =>
+        {
+            if (!ShouldShowInLivePanel(v)) return;
+            PushEventCard(v);
+        });
+    }
+
+    private bool ShouldShowInLivePanel(ViolationRecord v)
+    {
+        // Hide offline imports from realtime "Live Events"
+        if (!string.IsNullOrWhiteSpace(v.CameraId) &&
+            v.CameraId.Equals(OfflineCameraId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(v.CameraName) &&
+            v.CameraName.Equals(OfflineCameraName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
     }
 
     private void BuildUI()
@@ -216,16 +239,41 @@ public sealed class RealtimePage : UserControl
         _right.Padding = new Padding(10, 10, 20, 20);
         _right.Controls.Add(eventCard);
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 40 };
+        // Header (no Location hacks -> aligned)
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 44,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(10, 8, 10, 8)
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         eventCard.Controls.Add(header);
 
         var lbl = ControlFactory.Title("Live Events", 12, true);
-        lbl.Location = new Point(4, 8);
-        header.Controls.Add(lbl);
+        lbl.Dock = DockStyle.Fill;
+        lbl.TextAlign = ContentAlignment.MiddleLeft;
+        header.Controls.Add(lbl, 0, 0);
+
+        _btnClearLive = new Guna2Button
+        {
+            Text = "Clear",
+            BorderRadius = 10,
+            FillColor = Color.FromArgb(238, 242, 248),
+            ForeColor = Color.FromArgb(60, 70, 90),
+            Size = new Size(90, 30),
+            Margin = new Padding(0)
+        };
+        _btnClearLive.Click += (_, _) => _events.Controls.Clear();
+        header.Controls.Add(_btnClearLive, 1, 0);
 
         eventCard.Controls.Add(_events);
         ControlPerf.EnableDoubleBuffer(_events);
 
+        // Keep card widths in sync when panel resizes
+        _events.SizeChanged += (_, _) => UpdateEventCardWidths();
 
         // Default: Single
         SetMode(ViewMode.Single);
@@ -335,34 +383,76 @@ public sealed class RealtimePage : UserControl
         _app.Logs.Info(on ? "Detection started." : "Detection stopped.");
     }
 
+    private int CalcEventCardWidth()
+    {
+        var w = _events.ClientSize.Width;
+        if (w <= 0) w = _right.ClientSize.Width;
+        return Math.Max(220, w - SystemInformation.VerticalScrollBarWidth - 18);
+    }
+
+    private void UpdateEventCardWidths()
+    {
+        var target = CalcEventCardWidth();
+        foreach (Control c in _events.Controls)
+        {
+            if (c is Guna2Panel p) p.Width = target;
+            else c.Width = target;
+        }
+    }
+
     private void PushEventCard(ViolationRecord v)
     {
         _events.SuspendLayout();
+
+        var width = CalcEventCardWidth();
 
         var p = new Guna2Panel
         {
             BorderRadius = 12,
             FillColor = Color.FromArgb(255, 240, 240),
             Height = 90,
-            Width = Math.Max(220, _events.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 18),
+            Width = width,
             Margin = new Padding(6),
             Padding = new Padding(12)
         };
 
+        // Layout inside card (avoid Location misalignment)
+        var inner = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        inner.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        inner.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        inner.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        p.Controls.Add(inner);
+
         var t = ControlFactory.Title($"{v.Type}", 11, true);
-        t.Location = new Point(10, 8);
-        p.Controls.Add(t);
+        t.Dock = DockStyle.Fill;
+        t.TextAlign = ContentAlignment.MiddleLeft;
+        inner.Controls.Add(t, 0, 0);
+        inner.SetColumnSpan(t, 2);
 
         var s = ControlFactory.Muted($"{v.CameraName} • {v.TimeUtc.ToLocalTime():HH:mm:ss} • conf {v.Confidence:0.00}", 9);
-        s.Location = new Point(10, 34);
-        p.Controls.Add(s);
+        s.Dock = DockStyle.Fill;
+        s.TextAlign = ContentAlignment.MiddleLeft;
+        inner.Controls.Add(s, 0, 1);
+        inner.SetColumnSpan(s, 2);
 
         var badge = new BadgeLabel(
             v.Level.ToString().ToUpperInvariant(),
             UiHelpers.SeverityColor(v.Level),
             Color.White)
-        { Location = new Point(10, 58) };
-        p.Controls.Add(badge);
+        {
+            Dock = DockStyle.Left,
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        inner.Controls.Add(badge, 0, 2);
 
         _events.Controls.Add(p);
         _events.Controls.SetChildIndex(p, 0);
@@ -377,5 +467,4 @@ public sealed class RealtimePage : UserControl
 
         _events.ResumeLayout(true);
     }
-
 }

@@ -1,5 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
@@ -16,12 +16,20 @@ public sealed class DashboardPage : UserControl
 {
     private readonly AppBootstrap _app;
 
-    private FlowLayoutPanel _root = null!;
+    // Root scrolling surface
+    private Panel _scroll = null!;
+
+    // Two centered rows
+    private TableLayoutPanel _kpiRow = null!;
+    private TableLayoutPanel _chartsRow = null!;
+
+    // KPI labels
     private Label _lblTotal = null!;
     private Label _lblCritical = null!;
     private Label _lblRate = null!;
     private Label _lblActive = null!;
 
+    // Charts
     private ComboBox _cbRange = null!;
     private CartesianChart _trend = null!;
     private PieChart _pie = null!;
@@ -30,6 +38,19 @@ public sealed class DashboardPage : UserControl
 
     private readonly Axis _trendXAxis = new();
     private readonly Axis _trendYAxis = new();
+
+    // ✅ rc6.1 FIX: ObservableCollection để clear/add
+    private readonly ObservableCollection<double> _trendValues = new();
+    private readonly ObservableCollection<string> _trendLabels = new();
+
+    private LineSeries<double>? _trendLine;
+    private int _lastDays = -1;
+
+    private Action? _violationsChangedHandler;
+
+    // Layout constants
+    private const int MaxContentWidth = 1100;
+    private const int RowGap = 14;
 
     public DashboardPage(AppBootstrap app)
     {
@@ -46,64 +67,114 @@ public sealed class DashboardPage : UserControl
 
     private void Hook()
     {
-        _app.Violations.OnChanged += () =>
+        // tránh subscribe lambda vô danh (không unsubscribe được)
+        _violationsChangedHandler = () =>
         {
             if (!IsHandleCreated) return;
             BeginInvoke(new Action(RefreshMetrics));
         };
+        _app.Violations.OnChanged += _violationsChangedHandler;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (_violationsChangedHandler != null)
+                _app.Violations.OnChanged -= _violationsChangedHandler;
+        }
+        base.Dispose(disposing);
     }
 
     private void BuildUi()
     {
-        _root = new FlowLayoutPanel
+        Controls.Clear();
+
+        _scroll = new Panel
         {
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
             AutoScroll = true,
-            Padding = new Padding(18),
-            BackColor = AppColors.ContentBg
+            BackColor = AppColors.ContentBg,
+            Padding = new Padding(18)
         };
-        Controls.Add(_root);
+        Controls.Add(_scroll);
 
-        // KPI row
-        var kpiRow = new TableLayoutPanel
+        // KPI row (centered manually)
+        _kpiRow = new TableLayoutPanel
         {
             ColumnCount = 4,
             RowCount = 1,
-            Width = 1100,
-            Height = 110
+            Height = 110,
+            BackColor = AppColors.ContentBg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
-        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        _kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        _kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        _kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        _kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
 
-        kpiRow.Controls.Add(BuildKpiCard("TOTAL VIOLATIONS (TODAY)", out _lblTotal), 0, 0);
-        kpiRow.Controls.Add(BuildKpiCard("CRITICAL ALERTS", out _lblCritical), 1, 0);
-        kpiRow.Controls.Add(BuildKpiCard("COMPLIANCE RATE", out _lblRate), 2, 0);
-        kpiRow.Controls.Add(BuildKpiCard("ACTIVE CAMERAS", out _lblActive), 3, 0);
+        var c0 = BuildKpiCard("TOTAL VIOLATIONS (TODAY)", out _lblTotal); c0.Margin = new Padding(0, 0, 12, 0);
+        var c1 = BuildKpiCard("CRITICAL ALERTS", out _lblCritical); c1.Margin = new Padding(0, 0, 12, 0);
+        var c2 = BuildKpiCard("COMPLIANCE RATE", out _lblRate); c2.Margin = new Padding(0, 0, 12, 0);
+        var c3 = BuildKpiCard("ACTIVE CAMERAS", out _lblActive); c3.Margin = new Padding(0);
 
-        _root.Controls.Add(kpiRow);
+        _kpiRow.Controls.Add(c0, 0, 0);
+        _kpiRow.Controls.Add(c1, 1, 0);
+        _kpiRow.Controls.Add(c2, 2, 0);
+        _kpiRow.Controls.Add(c3, 3, 0);
 
-        // charts row
-        var charts = new TableLayoutPanel
+        // Charts row (centered manually)
+        _chartsRow = new TableLayoutPanel
         {
             ColumnCount = 2,
             RowCount = 1,
-            Width = 1100,
             Height = 360,
-            Margin = new Padding(0, 14, 0, 0)
+            BackColor = AppColors.ContentBg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
-        charts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-        charts.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        _chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        _chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
 
-        charts.Controls.Add(BuildTrendCard(), 0, 0);
-        charts.Controls.Add(BuildPieCard(), 1, 0);
+        var trendCard = BuildTrendCard(); trendCard.Margin = new Padding(0, 0, 12, 0);
+        var pieCard = BuildPieCard(); pieCard.Margin = new Padding(0);
 
-        _root.Controls.Add(charts);
+        _chartsRow.Controls.Add(trendCard, 0, 0);
+        _chartsRow.Controls.Add(pieCard, 1, 0);
+
+        _scroll.Controls.Add(_chartsRow);
+        _scroll.Controls.Add(_kpiRow);
+
+        _kpiRow.Top = _scroll.Padding.Top;
+        _chartsRow.Top = _kpiRow.Bottom + RowGap;
 
         ConfigureCharts();
+
+        _scroll.Resize += (_, _) => RelayoutCenteredRows();
+        HandleCreated += (_, _) => BeginInvoke(new Action(RelayoutCenteredRows));
+    }
+
+    private void RelayoutCenteredRows()
+    {
+        if (_scroll == null) return;
+
+        var avail = _scroll.ClientSize.Width - _scroll.Padding.Left - _scroll.Padding.Right;
+        if (avail <= 0) return;
+
+        var w = Math.Min(MaxContentWidth, avail);
+        w = Math.Max(420, w);
+
+        var left = _scroll.Padding.Left + Math.Max(0, (avail - w) / 2);
+
+        _kpiRow.Width = w;
+        _kpiRow.Left = left;
+
+        _chartsRow.Width = w;
+        _chartsRow.Left = left;
+
+        _kpiRow.Top = _scroll.Padding.Top;
+        _chartsRow.Top = _kpiRow.Bottom + RowGap;
     }
 
     private Control BuildKpiCard(string title, out Label value)
@@ -115,21 +186,37 @@ public sealed class DashboardPage : UserControl
             ShadowColor = Color.FromArgb(210, 220, 235),
             ShadowDepth = 2,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 12, 0),
-            Padding = new Padding(16, 14, 16, 14)
+            Padding = new Padding(14, 12, 14, 12)
         };
 
-        card.Controls.Add(ControlFactory.Muted(title, 9, true));
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        card.Controls.Add(layout);
+
+        var titleLbl = ControlFactory.Muted(title, 9, true);
+        titleLbl.AutoSize = false;
+        titleLbl.Dock = DockStyle.Fill;
+        titleLbl.TextAlign = ContentAlignment.MiddleCenter;
+        layout.Controls.Add(titleLbl, 0, 0);
 
         value = new Label
         {
             Text = "—",
-            AutoSize = true,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 22, FontStyle.Bold),
-            ForeColor = AppColors.TitleText,
-            Location = new Point(0, 34)
+            ForeColor = AppColors.TitleText
         };
-        card.Controls.Add(value);
+        layout.Controls.Add(value, 0, 1);
 
         return card;
     }
@@ -143,35 +230,75 @@ public sealed class DashboardPage : UserControl
             ShadowColor = Color.FromArgb(210, 220, 235),
             ShadowDepth = 2,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 12, 0),
             Padding = new Padding(16)
         };
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 44 };
-        card.Controls.Add(header);
+        var wrapper = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        wrapper.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        wrapper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        card.Controls.Add(wrapper);
+
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        wrapper.Controls.Add(header, 0, 0);
 
         var title = ControlFactory.Muted("Violations Trend", 10, true);
-        title.Location = new Point(6, 10);
-        header.Controls.Add(title);
+        title.AutoSize = false;
+        title.Dock = DockStyle.Fill;
+        title.TextAlign = ContentAlignment.MiddleLeft;
+        header.Controls.Add(title, 0, 0);
 
         _cbRange = new ComboBox
         {
             Width = 140,
             Height = 32,
-            DropDownStyle = ComboBoxStyle.DropDownList
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Anchor = AnchorStyles.Right,
+            Margin = new Padding(0, 8, 0, 0)
         };
         _cbRange.Items.AddRange(new object[] { "Last 7 Days", "Last 30 Days" });
         _cbRange.SelectedIndex = 0;
-        _cbRange.SelectedIndexChanged += (_, _) => RefreshMetrics();
-        header.Controls.Add(_cbRange);
 
-        header.Resize += (_, _) => _cbRange.Location = new Point(header.Width - _cbRange.Width - 6, 8);
-        _cbRange.Location = new Point(header.Width - _cbRange.Width - 6, 8);
+        // ✅ khi đổi range: rebuild series + refresh
+        _cbRange.SelectedIndexChanged += (_, _) =>
+        {
+            _lastDays = -1; // ép rebuild geometry
+            RefreshMetrics();
+        };
 
-        var body = new Panel { Dock = DockStyle.Fill };
-        card.Controls.Add(body);
+        header.Controls.Add(_cbRange, 1, 0);
 
-        _trend = new CartesianChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        // ✅ QUAN TRỌNG: nền phải trắng để Skia clear frame (rc6.1)
+        var body = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.White
+        };
+        wrapper.Controls.Add(body, 0, 1);
+
+        _trend = new CartesianChart
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.White,     // ✅ FIX GHOST LINE
+            Margin = Padding.Empty
+        };
         body.Controls.Add(_trend);
 
         _trendNoData = new Label
@@ -199,21 +326,52 @@ public sealed class DashboardPage : UserControl
             ShadowColor = Color.FromArgb(210, 220, 235),
             ShadowDepth = 2,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0),
             Padding = new Padding(16)
         };
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 44 };
-        card.Controls.Add(header);
+        var wrapper = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        wrapper.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        wrapper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        card.Controls.Add(wrapper);
+
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        wrapper.Controls.Add(header, 0, 0);
 
         var title = ControlFactory.Muted("By Violation Type", 10, true);
-        title.Location = new Point(6, 10);
-        header.Controls.Add(title);
+        title.AutoSize = false;
+        title.Dock = DockStyle.Fill;
+        title.TextAlign = ContentAlignment.MiddleLeft;
+        header.Controls.Add(title, 0, 0);
 
-        var body = new Panel { Dock = DockStyle.Fill };
-        card.Controls.Add(body);
+        var body = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.White
+        };
+        wrapper.Controls.Add(body, 0, 1);
 
-        _pie = new PieChart { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        _pie = new PieChart
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.White, // ✅ tránh ghost tương tự
+            Margin = Padding.Empty
+        };
         body.Controls.Add(_pie);
 
         _pieNoData = new Label
@@ -234,34 +392,55 @@ public sealed class DashboardPage : UserControl
 
     private void ConfigureCharts()
     {
+        // ✅ rc6.1: tắt animation để tránh giữ frame cũ
+        _trend.AnimationsSpeed = TimeSpan.Zero;
+        _trend.EasingFunction = null;
+
+        _pie.AnimationsSpeed = TimeSpan.Zero;
+        _pie.EasingFunction = null;
+
         _trendXAxis.LabelsRotation = 0;
         _trendYAxis.MinLimit = 0;
+
+        _trendXAxis.Labels = _trendLabels;
 
         _trend.XAxes = new[] { _trendXAxis };
         _trend.YAxes = new[] { _trendYAxis };
 
-        _trend.Series = new ISeries[]
+        _pie.Series = Array.Empty<ISeries>();
+    }
+
+    private void EnsureTrendSeries(int days)
+    {
+        if (_trendLine != null && _lastDays == days) return;
+
+        _lastDays = days;
+
+        // ✅ Rebuild series để bỏ hẳn geometry cũ (đổi 7/30)
+        _trendLine = new LineSeries<double>
         {
-            new LineSeries<double>
-            {
-                Values = new double[] { 0 },
-                GeometrySize = 10
-            }
+            Values = _trendValues,
+            GeometrySize = 10,
+            LineSmoothness = 0, // giảm khả năng “uốn” lạ
+            // Nếu bạn không muốn vùng tô xanh dưới đường line thì bật dòng này:
+            // Fill = null
         };
 
-        _pie.Series = Array.Empty<ISeries>();
+        _trend.Series = new ISeries[] { _trendLine };
     }
 
     private void RefreshMetrics()
     {
         var days = _cbRange?.SelectedIndex == 1 ? 30 : 7;
 
+        EnsureTrendSeries(days);
+
         var todayUtc = DateTime.UtcNow.Date;
         var fromUtc = todayUtc.AddDays(-(days - 1));
         var toUtc = todayUtc.AddDays(1); // exclusive end for today
 
-        // ✅ SQLite repo: dùng Query thay vì All()
-        var items = _app.Violations.Query(fromUtc, toUtc, limit: 200000);
+        // ✅ materialize 1 lần để không query DB lại nhiều lần
+        var items = _app.Violations.Query(fromUtc, toUtc, limit: 200000).ToList();
 
         var todayItems = items.Where(v => v.TimeUtc.ToUniversalTime().Date == todayUtc).ToList();
 
@@ -270,7 +449,6 @@ public sealed class DashboardPage : UserControl
         var criticalToday = todayItems.Count(v => v.Level == ViolationLevel.Critical);
         _lblCritical.Text = criticalToday.ToString();
 
-        // compliance rate demo: 100% - (violation/tổng giả lập)
         var totalChecks = Math.Max(1, todayItems.Count + 50);
         var compliance = Math.Max(0, 100 - (int)Math.Round(todayItems.Count * 100.0 / totalChecks));
         _lblRate.Text = compliance + "%";
@@ -283,24 +461,23 @@ public sealed class DashboardPage : UserControl
             .GroupBy(v => v.TimeUtc.ToUniversalTime().Date)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        var labels = Enumerable.Range(0, days)
+        var daysList = Enumerable.Range(0, days)
             .Select(i => fromUtc.AddDays(i).Date)
             .ToList();
 
-        var values = labels.Select(d => (double)(dayCounts.TryGetValue(d, out var c) ? c : 0)).ToArray();
+        // ✅ Clear/Add để chart không bị “dính” data cũ
+        _trendValues.Clear();
+        foreach (var d in daysList)
+            _trendValues.Add(dayCounts.TryGetValue(d, out var c) ? c : 0);
 
-        // Lấy series đầu tiên, ép kiểu an toàn
-        var line = _trend.Series.FirstOrDefault() as LineSeries<double>;
+        _trendLabels.Clear();
+        foreach (var d in daysList)
+            _trendLabels.Add(d.ToString("MM/dd"));
 
-        // Chỉ gán nếu lấy được series
-        if (line != null)
-        {
-            line.Values = values;
-        }
+        _trendNoData.Visible = _trendValues.All(v => v <= 0);
 
-        _trendXAxis.Labels = labels.Select(d => d.ToString("MM/dd")).ToArray();
-
-        _trendNoData.Visible = values.All(v => v <= 0);
+        // ép repaint
+        _trend.Refresh();
 
         // pie by type
         var byType = items.GroupBy(v => v.Type)
@@ -316,5 +493,7 @@ public sealed class DashboardPage : UserControl
                 Values = new double[] { x.Count },
                 Name = x.Type.ToString()
             }).ToArray();
+
+        _pie.Refresh();
     }
 }
