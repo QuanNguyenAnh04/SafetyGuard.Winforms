@@ -29,12 +29,13 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
     // Nếu model PPE detect "no_helmet", "no_vest"... thì map về các ViolationType tương ứng.
     private readonly Dictionary<int, ViolationType> _ppeMap = new()
     {
-        // ví dụ: 0 = no_helmet, 1 = no_vest, 2 = no_gloves, 3 = no_glasses ...
-        { 0, ViolationType.NoHelmet },
-        { 1, ViolationType.NoVest },
-        // { 2, ViolationType.NoGloves },
-        // { 3, ViolationType.NoGlasses },
+        { 4, ViolationType.NoBoots },
+        { 5, ViolationType.NoGlasses },
+        { 6, ViolationType.NoGloves },
+        { 7, ViolationType.NoHelmet },
+        { 8, ViolationType.NoVest },
     };
+
 
     private readonly Dictionary<int, ViolationType> _smokeMap = new()
     {
@@ -65,6 +66,7 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
         DumpSessionIO("SMOKE", _smoke);
     }
 
+
     private SessionOptions BuildSessionOptions()
     {
         var so = new SessionOptions
@@ -72,15 +74,36 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
         };
 
-        // Nếu bạn đã cài OnnxRuntime.DirectML thì bật dòng này:
-        // so.AppendExecutionProvider_DML();
+        // ===== GPU (DirectML) =====
+        // DirectML chạy trên GPU qua DirectX 12 (Intel/AMD/NVIDIA đều có thể), deviceId=0 là adapter đầu tiên.
+        // Nếu DirectML không sẵn sàng, code sẽ tự fallback về CPU.
+        try
+        {
+            var providers = OrtEnv.Instance().GetAvailableProviders();
+            _logs.Info($"ORT available EPs: {string.Join(", ", providers)}");
 
-        // CPU threads
+            if (providers.Any(p => string.Equals(p, "DmlExecutionProvider", StringComparison.OrdinalIgnoreCase)))
+            {
+                so.AppendExecutionProvider_DML(0);
+                _logs.Info("ORT selected EP: DirectML (deviceId=0)");
+            }
+            else
+            {
+                _logs.Warn("DirectML EP not found -> CPU fallback");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logs.Warn($"DirectML init failed -> CPU fallback. {ex.GetType().Name}: {ex.Message}");
+        }
+
+        // CPU threads (không hại khi chạy GPU, nhưng chủ yếu hữu ích khi CPU fallback)
         so.IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2);
         so.InterOpNumThreads = 1;
 
         return so;
     }
+
 
     public Detection[] Detect(Bitmap frame)
     {
@@ -239,12 +262,11 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
 
     private static List<RawBox> Parse_1_N_K(Tensor<float> t, float confMin)
     {
-        // [1, N, K]
         int N = t.Dimensions[1];
         int K = t.Dimensions[2];
 
-        // Nếu K == 6: [x1,y1,x2,y2,score,class]
-        if (K == 6)
+        // Nếu là output đã NMS: [x1,y1,x2,y2,score,class] và N nhỏ
+        if (K == 6 && N <= 1000)
         {
             var res6 = new List<RawBox>();
             for (int i = 0; i < N; i++)
@@ -261,82 +283,156 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
             return res6;
         }
 
-
-        if (K < 6) return new List<RawBox>(); // không đủ [cx,cy,w,h,obj,cls]
-
-        // assume layout: [cx, cy, w, h, obj, cls...]
-        int numClass = K - 5;
-        var res = new List<RawBox>();
-
-        if (numClass <= 0) return new List<RawBox>();
-
-
-        for (int i = 0; i < N; i++)
+        // ---- Try kiểu "NO objectness" (YOLOv11/v8 thường gặp): [cx,cy,w,h,cls...]
+        List<RawBox> noObj = new();
+        if (K >= 5)
         {
-            float cx = t[0, i, 0];
-            float cy = t[0, i, 1];
-            float w = t[0, i, 2];
-            float h = t[0, i, 3];
-            float obj = t[0, i, 4];
-
-            int bestId = -1;
-            float bestCls = 0;
-            for (int c = 0; c < numClass; c++)
+            int numClass = K - 4;
+            for (int i = 0; i < N; i++)
             {
-                float p = t[0, i, 5 + c];
-                if (p > bestCls) { bestCls = p; bestId = c; }
+                float cx = t[0, i, 0];
+                float cy = t[0, i, 1];
+                float w = t[0, i, 2];
+                float h = t[0, i, 3];
+
+                int bestId = -1;
+                float bestCls = 0;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[0, i, 4 + c];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = bestCls;
+                if (score < confMin) continue;
+
+                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
             }
-
-            float score = obj * bestCls;
-            if (score < confMin) continue;
-
-            res.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
         }
 
-        return res;
+        // ---- Try kiểu "HAS objectness": [cx,cy,w,h,obj,cls...]
+        List<RawBox> withObj = new();
+        if (K >= 6)
+        {
+            int numClass = K - 5;
+            for (int i = 0; i < N; i++)
+            {
+                float cx = t[0, i, 0];
+                float cy = t[0, i, 1];
+                float w = t[0, i, 2];
+                float h = t[0, i, 3];
+                float obj = t[0, i, 4];
+
+                int bestId = -1;
+                float bestCls = 0;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[0, i, 5 + c];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = obj * bestCls;
+                if (score < confMin) continue;
+
+                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
+            }
+        }
+
+        // Chọn parse nào ra nhiều box hơn (thực tế sẽ đúng cho model của bạn)
+        return noObj.Count >= withObj.Count ? noObj : withObj;
     }
+
 
     private static List<RawBox> Parse_1_K_N(Tensor<float> t, float confMin)
     {
-        // [1, K, N] => transpose logic
+        // [1, K, N]
         int K = t.Dimensions[1];
         int N = t.Dimensions[2];
 
-        int numClass = K - 5;
-        var res = new List<RawBox>();
-
-        for (int i = 0; i < N; i++)
+        // Heuristic: nếu là output đã NMS [x1,y1,x2,y2,score,cls] và N nhỏ
+        if (K == 6 && N <= 1000)
         {
-            float cx = t[0, 0, i];
-            float cy = t[0, 1, i];
-            float w = t[0, 2, i];
-            float h = t[0, 3, i];
-            float obj = t[0, 4, i];
-
-            int bestId = -1;
-            float bestCls = 0;
-            for (int c = 0; c < numClass; c++)
+            var res6 = new List<RawBox>();
+            for (int i = 0; i < N; i++)
             {
-                float p = t[0, 5 + c, i];
-                if (p > bestCls) { bestCls = p; bestId = c; }
+                float x1 = t[0, 0, i];
+                float y1 = t[0, 1, i];
+                float x2 = t[0, 2, i];
+                float y2 = t[0, 3, i];
+                float score = t[0, 4, i];
+                int cls = (int)t[0, 5, i];
+                if (score < confMin) continue;
+
+                res6.Add(new RawBox(x1, y1, x2 - x1, y2 - y1, score, cls));
             }
-
-            float score = obj * bestCls;
-            if (score < confMin) continue;
-
-            res.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
+            return res6;
         }
 
-        return res;
+        // ✅ YOLOv11/v8 thường gặp: KHÔNG objectness => [cx,cy,w,h,cls...]
+        var noObj = new List<RawBox>();
+        if (K >= 5)
+        {
+            int numClass = K - 4; // <- quan trọng: K=5 => numClass=1 (smoke)
+            for (int i = 0; i < N; i++)
+            {
+                float cx = t[0, 0, i];
+                float cy = t[0, 1, i];
+                float w = t[0, 2, i];
+                float h = t[0, 3, i];
+
+                int bestId = -1;
+                float bestCls = 0f;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[0, 4 + c, i];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = bestCls;
+                if (score < confMin) continue;
+                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
+            }
+        }
+
+        // (tuỳ chọn) nếu model thật sự có obj: [cx,cy,w,h,obj,cls...]
+        var withObj = new List<RawBox>();
+        if (K >= 6)
+        {
+            int numClass = K - 5;
+            for (int i = 0; i < N; i++)
+            {
+                float cx = t[0, 0, i];
+                float cy = t[0, 1, i];
+                float w = t[0, 2, i];
+                float h = t[0, 3, i];
+                float obj = t[0, 4, i];
+
+                int bestId = -1;
+                float bestCls = 0f;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[0, 5 + c, i];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = obj * bestCls;
+                if (score < confMin) continue;
+                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
+            }
+        }
+
+        // Chọn nhánh ra nhiều box hơn
+        return noObj.Count >= withObj.Count ? noObj : withObj;
     }
+
+
 
     private static List<RawBox> Parse_N_K(Tensor<float> t, float confMin)
     {
-        // [N, K]
         int N = t.Dimensions[0];
         int K = t.Dimensions[1];
 
-        if (K == 6)
+        if (K == 6 && N <= 1000)
         {
             var res6 = new List<RawBox>();
             for (int i = 0; i < N; i++)
@@ -348,39 +444,69 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
                 float score = t[i, 4];
                 int cls = (int)t[i, 5];
                 if (score < confMin) continue;
+
                 res6.Add(new RawBox(x1, y1, x2 - x1, y2 - y1, score, cls));
             }
             return res6;
         }
 
-        int numClass = K - 5;
-
-        var res = new List<RawBox>();
-
-        for (int i = 0; i < N; i++)
+        // ✅ no-objectness: [cx,cy,w,h,cls...]
+        var noObj = new List<RawBox>();
+        if (K >= 5)
         {
-            float cx = t[i, 0];
-            float cy = t[i, 1];
-            float w = t[i, 2];
-            float h = t[i, 3];
-            float obj = t[i, 4];
-
-            int bestId = -1;
-            float bestCls = 0;
-            for (int c = 0; c < numClass; c++)
+            int numClass = K - 4; // K=5 => 1 class
+            for (int i = 0; i < N; i++)
             {
-                float p = t[i, 5 + c];
-                if (p > bestCls) { bestCls = p; bestId = c; }
+                float cx = t[i, 0];
+                float cy = t[i, 1];
+                float w = t[i, 2];
+                float h = t[i, 3];
+
+                int bestId = -1;
+                float bestCls = 0f;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[i, 4 + c];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = bestCls;
+                if (score < confMin) continue;
+                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
             }
-
-            float score = obj * bestCls;
-            if (score < confMin) continue;
-
-            res.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
         }
 
-        return res;
+        // (tuỳ chọn) has-objectness
+        var withObj = new List<RawBox>();
+        if (K >= 6)
+        {
+            int numClass = K - 5;
+            for (int i = 0; i < N; i++)
+            {
+                float cx = t[i, 0];
+                float cy = t[i, 1];
+                float w = t[i, 2];
+                float h = t[i, 3];
+                float obj = t[i, 4];
+
+                int bestId = -1;
+                float bestCls = 0f;
+                for (int c = 0; c < numClass; c++)
+                {
+                    float p = t[i, 5 + c];
+                    if (p > bestCls) { bestCls = p; bestId = c; }
+                }
+
+                float score = obj * bestCls;
+                if (score < confMin) continue;
+                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
+            }
+        }
+
+        return noObj.Count >= withObj.Count ? noObj : withObj;
     }
+
+
 
     private static List<RawBox> Nms(List<RawBox> boxes, float iouThres)
     {

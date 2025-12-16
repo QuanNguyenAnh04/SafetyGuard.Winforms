@@ -23,6 +23,7 @@ public sealed class OfflinePage : UserControl
     private ProgressBar _progress = null!;
     private Guna2Button _btnBrowse = null!;
     private Guna2Button _btnRun = null!;
+    private Guna2Button _btnClear = null!;
 
     private PictureBox _preview = null!;
     private ListView _events = null!;
@@ -45,31 +46,85 @@ public sealed class OfflinePage : UserControl
         card.Padding = new Padding(16);
         Controls.Add(card);
 
-        // ===== TOP: Drop + 2 buttons =====
+        // Root layout: TOP (132) + MAIN (Fill) + PROGRESS (16)
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 16));
+        card.Controls.Add(root);
+
+        // ===== TOP =====
         var top = new Guna2Panel
         {
             BorderRadius = 14,
             FillColor = Color.White,
-            Height = 132,
-            Dock = DockStyle.Top,
-            Padding = new Padding(16)
+            Dock = DockStyle.Fill,
+            Padding = new Padding(16),
+            Margin = Padding.Empty
         };
         top.ShadowDecoration.Enabled = false;
-        card.Controls.Add(top);
+        root.Controls.Add(top, 0, 0);
+
+        var topLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        top.Controls.Add(topLayout);
+
+        var info = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
 
         var title = ControlFactory.Muted("Offline Analysis", 12, true);
-        title.Location = new Point(10, 10);
-        top.Controls.Add(title);
+        title.Dock = DockStyle.Fill;
+        title.TextAlign = ContentAlignment.MiddleLeft;
 
         _lblFile = ControlFactory.Muted("No file selected.", 9);
+        _lblFile.Dock = DockStyle.Fill;
         _lblFile.AutoEllipsis = true;
-        _lblFile.Width = 900;
-        _lblFile.Location = new Point(10, 40);
-        top.Controls.Add(_lblFile);
 
         _lblStatus = ControlFactory.Muted("Idle", 9);
-        _lblStatus.Location = new Point(10, 64);
-        top.Controls.Add(_lblStatus);
+        _lblStatus.Dock = DockStyle.Fill;
+        _lblStatus.AutoEllipsis = true;
+
+        info.Controls.Add(title, 0, 0);
+        info.Controls.Add(_lblFile, 0, 1);
+        info.Controls.Add(_lblStatus, 0, 2);
+
+        topLayout.Controls.Add(info, 0, 0);
+
+        var btns = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(12, 0, 0, 0),
+            Padding = Padding.Empty
+        };
+        topLayout.Controls.Add(btns, 1, 0);
 
         _btnBrowse = new Guna2Button
         {
@@ -78,10 +133,9 @@ public sealed class OfflinePage : UserControl
             FillColor = AppColors.PrimaryBlue,
             ForeColor = Color.White,
             Size = new Size(110, 38),
-            Location = new Point(10, 88)
+            Margin = new Padding(0, 0, 10, 0)
         };
         _btnBrowse.Click += (_, _) => Browse();
-        top.Controls.Add(_btnBrowse);
 
         _btnRun = new Guna2Button
         {
@@ -90,10 +144,24 @@ public sealed class OfflinePage : UserControl
             FillColor = AppColors.GoodGreen,
             ForeColor = Color.White,
             Size = new Size(140, 38),
-            Location = new Point(_btnBrowse.Right + 10, 88)
+            Margin = new Padding(0, 0, 10, 0)
         };
         _btnRun.Click += async (_, _) => await RunAsync();
-        top.Controls.Add(_btnRun);
+
+        _btnClear = new Guna2Button
+        {
+            Text = "Clear Log",
+            BorderRadius = 10,
+            FillColor = Color.FromArgb(238, 242, 248),
+            ForeColor = Color.FromArgb(60, 70, 90),
+            Size = new Size(110, 38),
+            Margin = new Padding(0, 0, 0, 0)
+        };
+        _btnClear.Click += (_, _) => Ui(() => _events.Items.Clear());
+
+        btns.Controls.Add(_btnBrowse);
+        btns.Controls.Add(_btnRun);
+        btns.Controls.Add(_btnClear);
 
         // Drag/drop
         top.AllowDrop = true;
@@ -105,23 +173,21 @@ public sealed class OfflinePage : UserControl
         top.DragDrop += (_, e) =>
         {
             var files = (string[]?)e.Data?.GetData(DataFormats.FileDrop);
-            if (files is { Length: > 0 })
-            {
-                SetSelected(files[0]);
-            }
+            if (files is { Length: > 0 }) SetSelected(files[0]);
         };
 
-        // ===== MAIN: Preview + Event Log =====
+        // ===== MAIN =====
         var main = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 1,
-            Padding = new Padding(0, 14, 0, 0)
+            Padding = new Padding(0, 14, 0, 0),
+            Margin = Padding.Empty
         };
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-        card.Controls.Add(main);
+        root.Controls.Add(main, 0, 1);
 
         // Preview card
         var previewCard = new Guna2Panel
@@ -135,18 +201,31 @@ public sealed class OfflinePage : UserControl
         previewCard.ShadowDecoration.Enabled = false;
         main.Controls.Add(previewCard, 0, 0);
 
+        var pvLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        pvLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        pvLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        previewCard.Controls.Add(pvLayout);
+
         var pvTitle = ControlFactory.Muted("Preview", 10, true);
-        pvTitle.Location = new Point(10, 10);
-        previewCard.Controls.Add(pvTitle);
+        pvTitle.Dock = DockStyle.Fill;
+        pvTitle.TextAlign = ContentAlignment.MiddleLeft;
+        pvLayout.Controls.Add(pvTitle, 0, 0);
 
         _preview = new PictureBox
         {
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(22, 22, 22),
-            SizeMode = PictureBoxSizeMode.Zoom
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Margin = Padding.Empty
         };
-        previewCard.Controls.Add(_preview);
-        _preview.BringToFront();
+        pvLayout.Controls.Add(_preview, 0, 1);
 
         // Event card
         var eventCard = new Guna2Panel
@@ -154,37 +233,85 @@ public sealed class OfflinePage : UserControl
             BorderRadius = 14,
             FillColor = Color.White,
             Dock = DockStyle.Fill,
-            Padding = new Padding(12)
+            Padding = new Padding(12),
+            Margin = Padding.Empty
         };
         eventCard.ShadowDecoration.Enabled = false;
         main.Controls.Add(eventCard, 1, 0);
 
-        var evTitle = ControlFactory.Muted("Live Event Log", 10, true);
-        evTitle.Location = new Point(10, 10);
-        eventCard.Controls.Add(evTitle);
+        var evLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        evLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        evLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        eventCard.Controls.Add(evLayout);
 
-        _events = new ListView
+        var evHeader = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
+
+        var evTitle = ControlFactory.Muted("Live Event Log", 10, true);
+        evTitle.Dock = DockStyle.Left;
+        evTitle.Width = 160;
+        evTitle.TextAlign = ContentAlignment.MiddleLeft;
+
+        var btnClearMini = new Guna2Button
+        {
+            Text = "Clear",
+            BorderRadius = 8,
+            Size = new Size(80, 28),
+            Dock = DockStyle.Right,
+            FillColor = Color.FromArgb(238, 242, 248),
+            ForeColor = Color.FromArgb(60, 70, 90),
+            Margin = Padding.Empty
+        };
+        btnClearMini.Click += (_, _) => Ui(() => _events.Items.Clear());
+
+        evHeader.Controls.Add(btnClearMini);
+        evHeader.Controls.Add(evTitle);
+
+        evLayout.Controls.Add(evHeader, 0, 0);
+
+        _events = new DoubleBufferedListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
-            GridLines = false
+            GridLines = false,
+            HideSelection = false,
+            MultiSelect = false,
+            Margin = Padding.Empty
         };
         _events.Columns.Add("Time", 80);
         _events.Columns.Add("Type", 115);
         _events.Columns.Add("Level", 75);
         _events.Columns.Add("Conf", 60);
-        eventCard.Controls.Add(_events);
-        _events.BringToFront();
 
-        // Bottom progress
+        _events.Resize += (_, _) =>
+        {
+            var w = _events.ClientSize.Width;
+            if (w <= 10 || _events.Columns.Count < 4) return;
+
+            _events.Columns[0].Width = 80;
+            _events.Columns[2].Width = 75;
+            _events.Columns[3].Width = 60;
+            _events.Columns[1].Width = Math.Max(120, w - (80 + 75 + 60 + 8));
+        };
+
+        evLayout.Controls.Add(_events, 0, 1);
+
+        // ===== PROGRESS =====
         _progress = new ProgressBar
         {
-            Dock = DockStyle.Bottom,
+            Dock = DockStyle.Fill,
             Height = 16,
-            Visible = false
+            Visible = false,
+            Margin = Padding.Empty
         };
-        card.Controls.Add(_progress);
+        root.Controls.Add(_progress, 0, 2);
     }
 
     private void Browse()
@@ -219,8 +346,11 @@ public sealed class OfflinePage : UserControl
         _running = true;
         SetRunningUI(true);
 
-        _events.Items.Clear();
-        _progress.Value = 0;
+        Ui(() =>
+        {
+            _events.Items.Clear();
+            _progress.Value = 0;
+        });
 
         var camId = "offline";
         var camName = "Offline Import";
@@ -253,7 +383,6 @@ public sealed class OfflinePage : UserControl
                 {
                     Ui(() => _lblStatus.Text = "Analyzing video...");
 
-                    // sample every N frames (10 = nhẹ, 5 = nặng hơn)
                     int sampleEveryNFrames = 10;
 
                     _app.Offline.AnalyzeVideo(
@@ -304,6 +433,8 @@ public sealed class OfflinePage : UserControl
         {
             _btnBrowse.Enabled = !running;
             _btnRun.Enabled = !running;
+            _btnClear.Enabled = !running;
+
             _progress.Visible = running;
             if (!running) _progress.Value = 0;
         });
@@ -320,7 +451,6 @@ public sealed class OfflinePage : UserControl
                 var color = ColorFor(d.Type);
                 using var pen = new Pen(color, 2);
 
-                // ✅ FIX: dùng W/H + cast int
                 var r = new Rectangle(
                     (int)d.Box.X,
                     (int)d.Box.Y,
@@ -328,7 +458,6 @@ public sealed class OfflinePage : UserControl
                     (int)d.Box.H
                 );
 
-                // ✅ Clamp
                 r = Rectangle.Intersect(r, new Rectangle(0, 0, annotated.Width - 1, annotated.Height - 1));
                 if (r.Width <= 1 || r.Height <= 1) continue;
 
@@ -352,7 +481,6 @@ public sealed class OfflinePage : UserControl
             _preview.Image = annotated;
         });
     }
-
 
     private void AddEvents(Detection[] dets)
     {
@@ -393,5 +521,16 @@ public sealed class OfflinePage : UserControl
         if (IsDisposed) return;
         if (InvokeRequired) BeginInvoke(a);
         else a();
+    }
+
+    // Giảm flicker khi insert items liên tục
+    private sealed class DoubleBufferedListView : ListView
+    {
+        public DoubleBufferedListView()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            UpdateStyles();
+        }
     }
 }

@@ -66,7 +66,8 @@ public sealed class ViolationEngine
             {
                 st.Consecutive++;
 
-                var ready = st.Consecutive >= s.MinConsecutiveFrames;
+                var ready = forceCreate || st.Consecutive >= s.MinConsecutiveFrames;
+
                 var cooldownOk = (now - st.LastCreatedUtc).TotalSeconds >= s.CooldownSeconds;
 
                 if (ready && cooldownOk)
