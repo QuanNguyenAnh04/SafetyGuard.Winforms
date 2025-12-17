@@ -9,6 +9,9 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.Services;
 
+using System.Diagnostics;
+using System.IO;
+
 namespace SafetyGuard.WinForms.Vision;
 
 public sealed class DualOnnxDetector : IDetector, IDisposable
@@ -56,6 +59,18 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
         if (!File.Exists(smokePath)) throw new FileNotFoundException("Missing model", smokePath);
 
         var so = BuildSessionOptions();
+        try
+        {
+            _ppe = new InferenceSession(ppePath, so);
+            HardLog("PPE session created OK");
+            _smoke = new InferenceSession(smokePath, so);
+            HardLog("SMOKE session created OK");
+        }
+        catch (Exception ex)
+        {
+            HardLog("Create session FAILED: " + ex);
+            throw;
+        }
         _ppe = new InferenceSession(ppePath, so);
         _smoke = new InferenceSession(smokePath, so);
 
@@ -74,29 +89,25 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
         try
         {
             var providers = OrtEnv.Instance().GetAvailableProviders();
-            _logs.Info($"ORT available EPs: {string.Join(", ", providers)}");
+            HardLog($"ORT available EPs: {string.Join(", ", providers)}");
 
             if (providers.Any(p => p.Equals("CUDAExecutionProvider", StringComparison.OrdinalIgnoreCase)))
             {
                 so.AppendExecutionProvider_CUDA(0);
-                _logs.Info("ORT selected EP: CUDA (deviceId=0)");
+                HardLog("ORT selected EP: CUDA (deviceId=0)");
             }
-            /*
-            else if (providers.Any(p => p.Equals("DmlExecutionProvider", StringComparison.OrdinalIgnoreCase)))
-            {
-                so.AppendExecutionProvider_DML(0);
-                _logs.Info("ORT selected EP: DirectML (deviceId=0)");
-            }
-            */
             else
             {
-                _logs.Warn("No GPU EP found -> CPU fallback");
+                HardLog("No GPU EP found -> CPU fallback");
             }
+
         }
         catch (Exception ex)
         {
-            _logs.Warn($"EP init failed -> CPU fallback. {ex.GetType().Name}: {ex.Message}");
+            HardLog("CUDA init failed: " + ex);
+            throw; // để biết chắc chắn GPU không chạy
         }
+
 
         return so;
     }
@@ -550,5 +561,14 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
     {
         _ppe.Dispose();
         _smoke.Dispose();
+    }
+
+    private static void HardLog(string s)
+    {
+        Debug.WriteLine(s);
+        File.AppendAllText(
+            Path.Combine(Path.GetTempPath(), "ort_startup.log"),
+            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {s}{Environment.NewLine}"
+        );
     }
 }
