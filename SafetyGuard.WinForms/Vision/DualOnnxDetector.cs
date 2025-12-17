@@ -69,40 +69,39 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
 
     private SessionOptions BuildSessionOptions()
     {
-        var so = new SessionOptions
-        {
-            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-        };
+        var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
 
-        // ===== GPU (DirectML) =====
-        // DirectML chạy trên GPU qua DirectX 12 (Intel/AMD/NVIDIA đều có thể), deviceId=0 là adapter đầu tiên.
-        // Nếu DirectML không sẵn sàng, code sẽ tự fallback về CPU.
         try
         {
             var providers = OrtEnv.Instance().GetAvailableProviders();
             _logs.Info($"ORT available EPs: {string.Join(", ", providers)}");
 
-            if (providers.Any(p => string.Equals(p, "DmlExecutionProvider", StringComparison.OrdinalIgnoreCase)))
+            if (providers.Any(p => p.Equals("CUDAExecutionProvider", StringComparison.OrdinalIgnoreCase)))
+            {
+                so.AppendExecutionProvider_CUDA(0);
+                _logs.Info("ORT selected EP: CUDA (deviceId=0)");
+            }
+            /*
+            else if (providers.Any(p => p.Equals("DmlExecutionProvider", StringComparison.OrdinalIgnoreCase)))
             {
                 so.AppendExecutionProvider_DML(0);
                 _logs.Info("ORT selected EP: DirectML (deviceId=0)");
             }
+            */
             else
             {
-                _logs.Warn("DirectML EP not found -> CPU fallback");
+                _logs.Warn("No GPU EP found -> CPU fallback");
             }
         }
         catch (Exception ex)
         {
-            _logs.Warn($"DirectML init failed -> CPU fallback. {ex.GetType().Name}: {ex.Message}");
+            _logs.Warn($"EP init failed -> CPU fallback. {ex.GetType().Name}: {ex.Message}");
         }
-
-        // CPU threads (không hại khi chạy GPU, nhưng chủ yếu hữu ích khi CPU fallback)
-        so.IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2);
-        so.InterOpNumThreads = 1;
 
         return so;
     }
+
+
 
 
     public Detection[] Detect(Bitmap frame)
