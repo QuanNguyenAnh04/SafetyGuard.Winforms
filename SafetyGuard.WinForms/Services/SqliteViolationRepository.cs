@@ -144,6 +144,36 @@ public sealed class SqliteViolationRepository : IViolationRepository
         OnChanged?.Invoke();
     }
 
+    public void DeleteByIds(IEnumerable<string> ids)
+    {
+        if (ids == null) return;
+
+        var list = ids
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToList();
+
+        if (list.Count == 0) return;
+
+        using var con = _db.Open();
+
+        const int chunkSize = 400; // tránh vượt giới hạn biến của SQLite
+        for (int i = 0; i < list.Count; i += chunkSize)
+        {
+            var chunk = list.Skip(i).Take(chunkSize).ToArray();
+            con.Execute("DELETE FROM violations WHERE id IN @ids;", new { ids = chunk });
+        }
+
+        OnChanged?.Invoke();
+    }
+
+    public void DeleteAll()
+    {
+        using var con = _db.Open();
+        con.Execute("DELETE FROM violations;");
+        OnChanged?.Invoke();
+    }
+
     public long CountByDateRange(DateTime fromUtc, DateTime toUtc)
     {
         using var con = _db.Open();

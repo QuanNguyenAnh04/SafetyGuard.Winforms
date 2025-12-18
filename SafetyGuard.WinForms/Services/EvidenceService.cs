@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using SafetyGuard.WinForms.Models;
 
@@ -62,6 +63,100 @@ public sealed class EvidenceService
     {
         if (!_settings.Current.SaveShortClip) return null;
         return null;
+    }
+
+    // =========================
+    // Delete / Cleanup helpers
+    // =========================
+
+    public bool TryDeleteEvidence(ViolationRecord v)
+    {
+        var ok1 = TryDeleteFile(v.SnapshotPath);
+        var ok2 = TryDeleteFile(v.ClipPath);
+        return ok1 && ok2;
+    }
+
+    public void CleanupEvidenceOlderThan(DateTime cutoffUtc)
+    {
+        try
+        {
+            var root = GetEvidenceRoot();
+            if (!Directory.Exists(root)) return;
+
+            var cutoffDate = cutoffUtc.Date;
+
+            foreach (var dir in Directory.GetDirectories(root))
+            {
+                var name = Path.GetFileName(dir);
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                // chỉ xóa folder theo format yyyyMMdd
+                if (!DateTime.TryParseExact(
+                        name,
+                        "yyyyMMdd",
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.None,
+                        out var folderDate))
+                    continue;
+
+                if (folderDate.Date < cutoffDate)
+                    TryDeleteDirectory(dir);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logs.Error("CleanupEvidenceOlderThan failed: " + ex.Message);
+        }
+    }
+
+    public void DeleteAllEvidence()
+    {
+        try
+        {
+            var root = GetEvidenceRoot();
+            if (!Directory.Exists(root)) return;
+
+            foreach (var dir in Directory.GetDirectories(root))
+                TryDeleteDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            _logs.Error("DeleteAllEvidence failed: " + ex.Message);
+        }
+    }
+
+    private bool TryDeleteFile(string? path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path)) return true;
+            if (!File.Exists(path)) return true;
+
+            File.Delete(path);
+            _logs.Info($"Evidence deleted: {path}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logs.Error("TryDeleteFile failed: " + ex.Message);
+            return false;
+        }
+    }
+
+    private bool TryDeleteDirectory(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir)) return true;
+            Directory.Delete(dir, recursive: true);
+            _logs.Info($"Evidence folder deleted: {dir}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logs.Error("TryDeleteDirectory failed: " + ex.Message);
+            return false;
+        }
     }
 
     private static string SanitizeFileName(string name)

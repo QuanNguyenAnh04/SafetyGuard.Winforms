@@ -967,7 +967,12 @@ public sealed class SettingsPage : UserControl
             try
             {
                 var cutoff = DateTime.UtcNow.AddDays(-days);
+
+                // 1) delete from DB
                 _app.Violations.DeleteOlderThanUtc(cutoff);
+
+                // 2) delete old evidence folders on disk (yyyyMMdd)
+                _app.Evidence.CleanupEvidenceOlderThan(cutoff);
             }
             catch { /* ignore */ }
         });

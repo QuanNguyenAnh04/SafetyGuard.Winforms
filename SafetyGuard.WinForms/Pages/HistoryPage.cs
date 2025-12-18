@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Guna.UI2.WinForms;
 using SafetyGuard.WinForms.Dialogs;
@@ -9,6 +10,7 @@ using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.Services;
 using SafetyGuard.WinForms.UI;
 using Timer = System.Windows.Forms.Timer;
+
 namespace SafetyGuard.WinForms.Pages;
 
 public sealed class HistoryPage : UserControl
@@ -103,17 +105,33 @@ public sealed class HistoryPage : UserControl
         btnXlsx.Click += (_, _) => Export(true);
         bar.Controls.Add(btnXlsx);
 
-        // Grid
+        // Delete dropdown
+        var btnDelete = new Guna2Button
+        {
+            Text = "Delete ▼",
+            BorderRadius = 10,
+            FillColor = Color.FromArgb(255, 235, 235),
+            ForeColor = Color.FromArgb(160, 20, 20)
+        };
+        btnDelete.Location = new Point(1168, 8);
+        btnDelete.Size = new Size(110, 38);
+        bar.Controls.Add(btnDelete);
 
+        var deleteMenu = new ContextMenuStrip();
+        deleteMenu.Items.Add("Delete selected", null, async (_, _) => await DeleteSelectedAsync());
+        deleteMenu.Items.Add("Delete filtered (current view)", null, async (_, _) => await DeleteFilteredAsync());
+        deleteMenu.Items.Add(new ToolStripSeparator());
+        deleteMenu.Items.Add("Delete ALL violations", null, async (_, _) => await DeleteAllAsync());
 
+        btnDelete.Click += (_, _) => deleteMenu.Show(btnDelete, 0, btnDelete.Height);
+
+        // Filter events
         _search.TextChanged += (_, _) => QueueRefresh();
         _cbType.SelectedIndexChanged += (_, _) => QueueRefresh();
         _cbStatus.SelectedIndexChanged += (_, _) => QueueRefresh();
         _from.ValueChanged += (_, _) => QueueRefresh();
         _to.ValueChanged += (_, _) => QueueRefresh();
-
     }
-
 
     private void SetupGrid()
     {
@@ -128,7 +146,7 @@ public sealed class HistoryPage : UserControl
         _grid.ThemeStyle.RowsStyle.Height = 48;
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        _grid.MultiSelect = false;
+        _grid.MultiSelect = true;
         _grid.AutoGenerateColumns = false;
 
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Time", DataPropertyName = "TimeUtc", Width = 180 });
@@ -166,8 +184,8 @@ public sealed class HistoryPage : UserControl
                 }
             }
         };
-        ControlPerf.EnableDoubleBuffer(_grid);
 
+        ControlPerf.EnableDoubleBuffer(_grid);
     }
 
     private void QueueRefresh()
@@ -176,39 +194,28 @@ public sealed class HistoryPage : UserControl
         _debounce.Start();
     }
 
-
     private void RefreshData()
     {
-        // 1. Lấy giá trị ViolationType từ ComboBox (nếu chọn index > 0)
         ViolationType? selectedType = null;
         if (_cbType.SelectedIndex > 0 && Enum.TryParse<ViolationType>(_cbType.SelectedItem?.ToString(), out var t))
-        {
             selectedType = t;
-        }
 
-        // 2. Lấy giá trị ViolationStatus từ ComboBox (nếu chọn index > 0)
         ViolationStatus? selectedStatus = null;
         if (_cbStatus.SelectedIndex > 0 && Enum.TryParse<ViolationStatus>(_cbStatus.SelectedItem?.ToString(), out var st))
-        {
             selectedStatus = st;
-        }
 
-        // 3. Gọi hàm Query với các tham số đã chuẩn bị
-        // Lưu ý: fromUtc và toUtc cần lấy Value rồi chuyển sang UTC
         var rows = _app.Violations.Query(
             fromUtc: _from.Value.Date.ToUniversalTime(),
-            toUtc: _to.Value.Date.AddDays(1).ToUniversalTime(), // Cộng thêm 1 ngày để lấy hết data trong ngày 'to'
+            toUtc: _to.Value.Date.AddDays(1).ToUniversalTime(),
             search: _search.Text.Trim(),
             type: selectedType,
             status: selectedStatus,
             limit: 5000
         );
 
-        // 4. Gán kết quả vào biến _current và hiển thị lên Grid
         _current = rows.ToList();
         _grid.DataSource = _current;
     }
-
 
     private void Export(bool excel)
     {
@@ -223,5 +230,118 @@ public sealed class HistoryPage : UserControl
         else _app.Export.ExportCsv(sfd.FileName, _current);
 
         MessageBox.Show(this, "Export done!", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    // =========================
+    // Delete helpers
+    // =========================
+    private List<ViolationRecord> GetSelectedViolations()
+    {
+        var list = new List<ViolationRecord>();
+
+        foreach (DataGridViewRow r in _grid.SelectedRows)
+        {
+            if (r.DataBoundItem is ViolationRecord v)
+                list.Add(v);
+        }
+
+        return list
+            .Where(v => !string.IsNullOrWhiteSpace(v.Id))
+            .GroupBy(v => v.Id)
+            .Select(g => g.First())
+            .ToList();
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        var rows = GetSelectedViolations();
+        if (rows.Count == 0)
+        {
+            MessageBox.Show(this, "Please select one or more rows to delete.", "Delete", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        await DeleteRowsAsync(rows, $"Delete selected {rows.Count} record(s)?");
+    }
+
+    private async Task DeleteFilteredAsync()
+    {
+        var rows = _current
+            .Where(v => !string.IsNullOrWhiteSpace(v.Id))
+            .GroupBy(v => v.Id)
+            .Select(g => g.First())
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            MessageBox.Show(this, "No data in current view.", "Delete", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        await DeleteRowsAsync(rows, $"Delete ALL {rows.Count} record(s) in current view?");
+    }
+
+    private async Task DeleteAllAsync()
+    {
+        if (MessageBox.Show(this,
+                "Delete ALL violations in database?\n\nThis will remove all history records.",
+                "Confirm Delete All",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        UseWaitCursor = true;
+        try
+        {
+            await Task.Run(() =>
+            {
+                _app.Violations.DeleteAll();
+                _app.Evidence.DeleteAllEvidence();
+            });
+
+            MessageBox.Show(this, "All violations deleted.", "Delete", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Delete Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
+    }
+
+    private async Task DeleteRowsAsync(List<ViolationRecord> rows, string confirmText)
+    {
+        if (MessageBox.Show(this, confirmText, "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        UseWaitCursor = true;
+        try
+        {
+            var ids = rows.Select(v => v.Id).Where(id => !string.IsNullOrWhiteSpace(id)).ToArray();
+
+            await Task.Run(() =>
+            {
+                foreach (var v in rows)
+                    _app.Evidence.TryDeleteEvidence(v);
+
+                _app.Violations.DeleteByIds(ids);
+            });
+
+            MessageBox.Show(this, "Delete done!", "Delete", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Delete Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
     }
 }

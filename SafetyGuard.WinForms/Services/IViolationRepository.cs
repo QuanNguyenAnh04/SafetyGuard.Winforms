@@ -21,6 +21,10 @@ public interface IViolationRepository
 
     void DeleteOlderThanUtc(DateTime cutoffUtc);
 
+    // ✅ thêm cho HistoryPage
+    void DeleteByIds(IEnumerable<string> ids);
+    void DeleteAll();
+
     // dashboard helpers
     long CountByDateRange(DateTime fromUtc, DateTime toUtc);
     long CountByDateRangeAndLevel(DateTime fromUtc, DateTime toUtc, ViolationLevel level);
