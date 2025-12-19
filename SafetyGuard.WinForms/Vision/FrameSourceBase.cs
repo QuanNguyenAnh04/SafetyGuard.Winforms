@@ -13,10 +13,12 @@ public abstract class FrameSourceBase : IDisposable
 
     public CameraStatus Status { get; private set; } = CameraStatus.Offline;
 
-    public event Action<Bitmap>? OnFrame;
+    public event Action<FramePacket>? OnFrame;
     public event Action<CameraStatus>? OnStatus;
 
     protected CancellationTokenSource? Cts;
+
+    private int _frameIndex;
 
     protected FrameSourceBase(string cameraId, string cameraName, string url)
     {
@@ -30,7 +32,7 @@ public abstract class FrameSourceBase : IDisposable
         if (Cts != null) return;
 
         Cts = new CancellationTokenSource();
-        SetStatus(CameraStatus.Reconnecting);   // 🔹 trạng thái khởi động
+        SetStatus(CameraStatus.Reconnecting);
         Run(Cts.Token);
     }
 
@@ -41,19 +43,18 @@ public abstract class FrameSourceBase : IDisposable
         try { Cts.Cancel(); } catch { }
         Cts = null;
 
-        SetStatus(CameraStatus.Offline);        // 🔹 chỉ phát nếu khác trạng thái trước
+        SetStatus(CameraStatus.Offline);
     }
 
     protected void EmitFrame(Bitmap bmp)
-        => OnFrame?.Invoke(bmp);
+    {
+        var idx = Interlocked.Increment(ref _frameIndex);
+        OnFrame?.Invoke(new FramePacket(idx, bmp, DateTime.UtcNow));
+    }
 
-    /// <summary>
-    /// Update camera status – only raise event when changed
-    /// </summary>
     protected void SetStatus(CameraStatus st)
     {
-        if (Status == st) return;   // ✅ chặn spam event
-
+        if (Status == st) return;
         Status = st;
         OnStatus?.Invoke(st);
     }

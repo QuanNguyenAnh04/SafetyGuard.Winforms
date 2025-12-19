@@ -165,4 +165,33 @@ public sealed class EvidenceService
             name = name.Replace(c, '_');
         return name;
     }
+
+    public string? SavePersonSnapshot(Bitmap fullFrame, ViolationRecord v, BoundingBox personBox)
+    {
+        try
+        {
+            if (!_settings.Current.SaveSnapshot) return null;
+
+            var rect = personBox.ToRectClamped(fullFrame.Width, fullFrame.Height);
+            if (rect.Width < 2 || rect.Height < 2)
+                return SaveSnapshot(fullFrame, v);
+
+            using var crop = new Bitmap(rect.Width, rect.Height);
+            using (var g = Graphics.FromImage(crop))
+            {
+                g.DrawImage(fullFrame,
+                    destRect: new Rectangle(0, 0, rect.Width, rect.Height),
+                    srcRect: rect,
+                    srcUnit: GraphicsUnit.Pixel);
+            }
+
+            return SaveSnapshot(crop, v);
+        }
+        catch (Exception ex)
+        {
+            _logs.Error("SavePersonSnapshot failed: " + ex.Message);
+            return null;
+        }
+    }
+
 }

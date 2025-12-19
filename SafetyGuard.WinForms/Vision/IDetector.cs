@@ -5,6 +5,6 @@ namespace SafetyGuard.WinForms.Vision;
 
 public interface IDetector
 {
-    Detection[] Detect(Bitmap frame);
+    DetectionResult[] Detect(Bitmap frame);
     string Name { get; }
 }

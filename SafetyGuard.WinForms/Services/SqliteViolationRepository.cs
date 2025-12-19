@@ -20,10 +20,10 @@ public sealed class SqliteViolationRepository : IViolationRepository
         con.Execute("""
             INSERT INTO violations(
               id, time_utc_ms, camera_id, camera_name, type, level, status, confidence,
-              snapshot_path, clip_path, notes
+              snapshot_path, clip_path, notes, track_id, person_box
             ) VALUES (
               @id, @t, @camId, @camName, @type, @level, @status, @conf,
-              @snap, @clip, @notes
+              @snap, @clip, @notes, @track, @pbox
             )
         """, new
         {
@@ -37,7 +37,9 @@ public sealed class SqliteViolationRepository : IViolationRepository
             conf = v.Confidence,
             snap = v.SnapshotPath,
             clip = v.ClipPath,
-            notes = v.Notes
+            notes = v.Notes,
+            track = v.TrackId,
+            pbox = v.PersonBox
         });
 
         OnChanged?.Invoke();
@@ -107,7 +109,9 @@ public sealed class SqliteViolationRepository : IViolationRepository
               confidence,
               snapshot_path,
               clip_path,
-              notes
+              notes,
+              track_id,
+              person_box
             FROM violations
         """;
 
@@ -131,7 +135,9 @@ public sealed class SqliteViolationRepository : IViolationRepository
             Confidence = (float)(double)r.confidence,
             SnapshotPath = (string?)r.snapshot_path,
             ClipPath = (string?)r.clip_path,
-            Notes = (string?)r.notes
+            Notes = (string?)r.notes,
+            TrackId = (int?)r.track_id,
+            PersonBox = (string?)r.person_box
         }).ToList();
     }
 

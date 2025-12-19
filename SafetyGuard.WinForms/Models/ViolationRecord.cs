@@ -22,4 +22,8 @@ public sealed class ViolationRecord
 
     // Useful for filtering
     public string? Notes { get; set; }
+
+    public int? TrackId { get; set; }
+    public string? PersonBox { get; set; }
+
 }

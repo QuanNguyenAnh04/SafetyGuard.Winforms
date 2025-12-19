@@ -10,6 +10,26 @@ public enum ViolationType
     Smoking
 }
 
+// ✅ NEW: object classes (đầu ra detector)
+public enum ObjectClass
+{
+    Person,
+    Helmet,
+    Vest,
+    Gloves,
+    Glasses,
+    Boots,
+
+    // optional (nếu model có class "no_xxx")
+    NoHelmet,
+    NoVest,
+    NoGloves,
+    NoGlasses,
+    NoBoots,
+
+    Smoking
+}
+
 public enum CameraStatus
 {
     Offline,

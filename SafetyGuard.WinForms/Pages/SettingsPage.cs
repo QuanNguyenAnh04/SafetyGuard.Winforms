@@ -41,7 +41,6 @@ public sealed class SettingsPage : UserControl
 
     private Guna2Panel _cardRules = null!;
     private TableLayoutPanel _rulesGrid = null!;
-    private Label _lblSubtitle = null!;
 
     private Guna2Panel _cardLogic = null!;
     private Guna2NumericUpDown _numMinFrames = null!;

@@ -1,50 +1,50 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using SafetyGuard.WinForms.Models;
 using SafetyGuard.WinForms.Services;
 
-using System.Diagnostics;
-using System.IO;
-
 namespace SafetyGuard.WinForms.Vision;
 
 public sealed class DualOnnxDetector : IDetector, IDisposable
 {
+    public string Name => "DualONNX (PPE+SMOKE)";
+
     private readonly IAppSettingsService _settings;
     private readonly LogService _logs;
 
-    private readonly InferenceSession _ppe;
-    private readonly InferenceSession _smoke;
+    private InferenceSession? _ppe;
+    private InferenceSession? _smoke;
 
-    // Input size YOLO (thường 640). Bạn có thể đọc từ model metadata nếu muốn.
-    private const int InW = 640;
-    private const int InH = 640;
-
-    public string Name => "DualOnnxDetector (PPE + Smoke)";
-
-    // Mapping classId -> ViolationType (bạn chỉnh theo label thật của model)
-    // Nếu model PPE detect "no_helmet", "no_vest"... thì map về các ViolationType tương ứng.
-    private readonly Dictionary<int, ViolationType> _ppeMap = new()
+    // Mapping classId -> ObjectClass (hãy chỉnh theo label thật của model bạn export)
+    private readonly Dictionary<int, ObjectClass> _ppeMap = new()
     {
-        { 4, ViolationType.NoBoots },
-        { 5, ViolationType.NoGlasses },
-        { 6, ViolationType.NoGloves },
-        { 7, ViolationType.NoHelmet },
-        { 8, ViolationType.NoVest },
+        { 0, ObjectClass.Boots },
+        { 1, ObjectClass.Glasses },
+        { 2, ObjectClass.Gloves },
+        { 3, ObjectClass.Helmet },
+        { 4, ObjectClass.NoBoots },
+        { 5, ObjectClass.NoGlasses },
+        { 6, ObjectClass.NoGloves },
+        { 7, ObjectClass.NoHelmet },
+        { 8, ObjectClass.NoVest },
+        { 9, ObjectClass.Person },
+        { 10, ObjectClass.Vest },
     };
 
-
-    private readonly Dictionary<int, ViolationType> _smokeMap = new()
+    private readonly Dictionary<int, ObjectClass> _smokeMap = new()
     {
-        // ví dụ: 0 = smoking
-        { 0, ViolationType.Smoking }
+        { 0, ObjectClass.Smoking }
     };
+
+    private readonly float _nmsIou = 0.45f;
 
     public DualOnnxDetector(IAppSettingsService settings, LogService logs)
     {
@@ -55,520 +55,399 @@ public sealed class DualOnnxDetector : IDetector, IDisposable
         var ppePath = Path.Combine(baseDir, "Assets", "Models", "YOLOv11_ppe.onnx");
         var smokePath = Path.Combine(baseDir, "Assets", "Models", "YOLOv11_smoke.onnx");
 
-        if (!File.Exists(ppePath)) throw new FileNotFoundException("Missing model", ppePath);
-        if (!File.Exists(smokePath)) throw new FileNotFoundException("Missing model", smokePath);
+        var so = CreateSessionOptions();
 
-        var so = BuildSessionOptions();
-        try
-        {
-            _ppe = new InferenceSession(ppePath, so);
-            HardLog("PPE session created OK");
-            _smoke = new InferenceSession(smokePath, so);
-            HardLog("SMOKE session created OK");
-        }
-        catch (Exception ex)
-        {
-            HardLog("Create session FAILED: " + ex);
-            throw;
-        }
         _ppe = new InferenceSession(ppePath, so);
         _smoke = new InferenceSession(smokePath, so);
 
-        _logs.Info($"Loaded PPE model: {ppePath}");
-        _logs.Info($"Loaded Smoke model: {smokePath}");
-
-        DumpSessionIO("PPE", _ppe);
-        DumpSessionIO("SMOKE", _smoke);
+        _logs.Info($"Loaded ONNX: PPE={ppePath} | SMOKE={smokePath}");
     }
 
-
-    private SessionOptions BuildSessionOptions()
+    private SessionOptions CreateSessionOptions()
     {
-        var so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
+        var so = new SessionOptions
+        {
+            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+            EnableCpuMemArena = true,
+        };
 
+        // ✅ Try CUDA first (requires Microsoft.ML.OnnxRuntime.Gpu + đúng CUDA runtime)
         try
         {
-            var providers = OrtEnv.Instance().GetAvailableProviders();
-            HardLog($"ORT available EPs: {string.Join(", ", providers)}");
-
-            if (providers.Any(p => p.Equals("CUDAExecutionProvider", StringComparison.OrdinalIgnoreCase)))
-            {
-                so.AppendExecutionProvider_CUDA(0);
-                HardLog("ORT selected EP: CUDA (deviceId=0)");
-            }
-            else
-            {
-                HardLog("No GPU EP found -> CPU fallback");
-            }
-
+            // device 0
+            so.AppendExecutionProvider_CUDA(0);
+            _logs.Info("ONNX Runtime: CUDA Execution Provider ENABLED (device 0).");
         }
         catch (Exception ex)
         {
-            HardLog("CUDA init failed: " + ex);
-            throw; // để biết chắc chắn GPU không chạy
+            _logs.Warn("ONNX Runtime: CUDA EP not available -> fallback CPU. Reason: " + ex.Message);
         }
-
 
         return so;
     }
 
-
-
-
-    public Detection[] Detect(Bitmap frame)
+    public DetectionResult[] Detect(Bitmap frame)
     {
-        // thresholds lấy từ SettingsPage của bạn
+        if (_ppe == null || _smoke == null) return Array.Empty<DetectionResult>();
+
+        // ✅ chỉ lấy rule đang bật (nếu project bạn không có Enabled thì đổi lại như cũ)
         var rules = _settings.Current.Rules;
-        var confMin = rules.Count > 0 ? rules.Min(r => r.ConfidenceThreshold) : 0.4f;
+        var enabled = rules.Where(r => r.Enabled).ToList();
+        var confMin = enabled.Count > 0 ? enabled.Min(r => r.ConfidenceThreshold) : 0.35f;
 
         var ppe = RunOne(_ppe, frame, confMin, _ppeMap);
         var smoke = RunOne(_smoke, frame, confMin, _smokeMap);
 
-        // gộp và trả
         return ppe.Concat(smoke).ToArray();
     }
 
-    private Detection[] RunOne(InferenceSession session, Bitmap frame, float confMin, Dictionary<int, ViolationType> map)
+    private DetectionResult[] RunOne(InferenceSession session, Bitmap frame, float confMin, Dictionary<int, ObjectClass> map)
     {
-        // Letterbox -> tensor
-        using var resized = Letterbox(frame, InW, InH, out var pad, out var scale);
+        // ===== infer input size =====
+        var inputMeta = session.InputMetadata;
+        var inputName = inputMeta.Keys.First();
 
-        var inputName = session.InputMetadata.Keys.First();
-        var tensor = ImageToCHWFloat(resized); // [1,3,640,640]
-        var inputs = new List<NamedOnnxValue>
+        var shape = inputMeta[inputName].Dimensions.ToArray();
+        int inW = (shape.Length >= 4 && shape[3] > 0) ? shape[3] : 640;
+        int inH = (shape.Length >= 4 && shape[2] > 0) ? shape[2] : 640;
+
+        using var resized = new Bitmap(frame, new Size(inW, inH));
+        var input = BitmapToCHWTensor(resized);
+
+        var inputNv = NamedOnnxValue.CreateFromTensor(inputName, input);
+        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = session.Run(new[] { inputNv });
+
+        var outTensor = results.First().AsTensor<float>();
+        var dims = outTensor.Dimensions.ToArray();
+        var arr = outTensor.ToArray();
+
+        // Case A: NMS output [1, N, 6] or [N, 6] or [1, 6, N]
+        var detsNms = TryParseNmsLike(arr, dims, confMin, map, frame.Width, frame.Height, inW, inH);
+        if (detsNms != null) return detsNms;
+
+        // Case B: Raw head [1, N, S] or [1, S, N]
+        return ParseRawHead(arr, dims, confMin, map, frame.Width, frame.Height, inW, inH);
+    }
+
+    private DetectionResult[]? TryParseNmsLike(
+        float[] arr,
+        int[] dims,
+        float confMin,
+        Dictionary<int, ObjectClass> map,
+        int srcW, int srcH,
+        int inW, int inH)
+    {
+        if (dims.Length == 3 && dims[0] == 1 && dims[2] == 6)
         {
-            NamedOnnxValue.CreateFromTensor(inputName, tensor)
-        };
+            int n = dims[1];
+            return ParseNmsArray(arr, n, stride: 6, offset: 0, transposed: false, confMin, map, srcW, srcH, inW, inH);
+        }
 
-        using var outputs = session.Run(inputs);
-        var out0 = outputs.First().AsTensor<float>();
-        var dims = out0.Dimensions.ToArray();
-        _logs.Info($"ONNX output dims: [{string.Join(",", dims)}]");
-
-
-        // parse output -> raw boxes
-        var raw = ParseYolo(outputs, confMin);
-
-        // NMS
-        float iou = 0.45f;
-        var keep = Nms(raw, iou);
-
-        // map về Detection[] + scale back về frame gốc
-        var dets = new List<Detection>(keep.Count);
-        foreach (var b in keep)
+        if (dims.Length == 3 && dims[0] == 1 && dims[1] == 6)
         {
-            if (!map.TryGetValue(b.ClassId, out var vt))
-                continue; // class không quan tâm
+            int n = dims[2];
+            return ParseNmsArray(arr, n, stride: 6, offset: 0, transposed: true, confMin, map, srcW, srcH, inW, inH);
+        }
 
-            // b.X/Y/W/H đang theo input 640, đã letterbox. Scale về ảnh gốc
-            var x = (b.X - pad.X) / scale;
-            var y = (b.Y - pad.Y) / scale;
-            var w = b.W / scale;
-            var h = b.H / scale;
+        if (dims.Length == 2 && dims[1] == 6)
+        {
+            int n = dims[0];
+            return ParseNmsArray(arr, n, stride: 6, offset: 0, transposed: false, confMin, map, srcW, srcH, inW, inH);
+        }
 
-            // clamp
-            x = Math.Max(0, Math.Min(frame.Width - 1, x));
-            y = Math.Max(0, Math.Min(frame.Height - 1, y));
-            w = Math.Max(1, Math.Min(frame.Width - x, w));
-            h = Math.Max(1, Math.Min(frame.Height - y, h));
+        return null;
+    }
 
-            dets.Add(new Detection
+    private DetectionResult[] ParseNmsArray(
+        float[] arr,
+        int n,
+        int stride,
+        int offset,
+        bool transposed,
+        float confMin,
+        Dictionary<int, ObjectClass> map,
+        int srcW, int srcH,
+        int inW, int inH)
+    {
+        float sx = srcW / (float)inW;
+        float sy = srcH / (float)inH;
+
+        var dets = new List<DetectionResult>(Math.Min(n, 200));
+
+        for (int i = 0; i < n; i++)
+        {
+            float x1, y1, x2, y2, score, clsF;
+
+            if (!transposed)
             {
-                Type = vt,
-                Confidence = b.Score,
-                Box = new BoundingBox((int)x, (int)y, (int)w, (int)h)
+                int baseIdx = offset + i * stride;
+                x1 = arr[baseIdx + 0];
+                y1 = arr[baseIdx + 1];
+                x2 = arr[baseIdx + 2];
+                y2 = arr[baseIdx + 3];
+                score = arr[baseIdx + 4];
+                clsF = arr[baseIdx + 5];
+            }
+            else
+            {
+                x1 = arr[0 * n + i];
+                y1 = arr[1 * n + i];
+                x2 = arr[2 * n + i];
+                y2 = arr[3 * n + i];
+                score = arr[4 * n + i];
+                clsF = arr[5 * n + i];
+            }
+
+            if (score < confMin) continue;
+
+            int classId = (int)clsF;
+            if (!map.TryGetValue(classId, out var oc)) continue;
+
+            var bx = x1 * sx;
+            var by = y1 * sy;
+            var bw = (x2 - x1) * sx;
+            var bh = (y2 - y1) * sy;
+
+            dets.Add(new DetectionResult
+            {
+                Class = oc,
+                Confidence = score,
+                Box = new BoundingBox((int)bx, (int)by, (int)bw, (int)bh)
             });
         }
 
         return dets.ToArray();
     }
 
-    private static void DumpSessionIO(string tag, InferenceSession s)
+    private DetectionResult[] ParseRawHead(
+        float[] outArr,
+        int[] outDims,
+        float confMin,
+        Dictionary<int, ObjectClass> map,
+        int srcW, int srcH,
+        int inW, int inH)
     {
-        // In log để bạn biết output shape thật (giúp sửa parser nếu cần)
-        // Không bắt buộc, nhưng rất hữu ích lúc debug
-        // (Bạn có LogService nên có thể log ra file)
-        // Ở đây để đơn giản, dùng Console (nếu bạn muốn dùng _logs thì sửa lại).
-        Console.WriteLine($"[{tag}] Inputs:");
-        foreach (var kv in s.InputMetadata)
-            Console.WriteLine($"  {kv.Key}  {string.Join(",", kv.Value.Dimensions)}  {kv.Value.ElementType}");
+        // ✅ Fix quan trọng:
+        // - tự nhận layout [1,N,S] hoặc [1,S,N]
+        // - hỗ trợ stride = 4+nc (không obj) và 5+nc (có obj)
+        if (!(outDims.Length == 3 && outDims[0] == 1))
+            return Array.Empty<DetectionResult>();
 
-        Console.WriteLine($"[{tag}] Outputs:");
-        foreach (var kv in s.OutputMetadata)
-            Console.WriteLine($"  {kv.Key}  {string.Join(",", kv.Value.Dimensions)}  {kv.Value.ElementType}");
-    }
+        int nA = outDims[1], strideA = outDims[2]; // [1,N,S]
+        int nB = outDims[2], strideB = outDims[1]; // [1,S,N]
 
-    // ===== Preprocess =====
+        int expectedNoObj = 4 + map.Count;
+        int expectedObj = 5 + map.Count;
 
-    private static Bitmap Letterbox(Bitmap src, int dstW, int dstH, out PointF pad, out float scale)
-    {
-        scale = Math.Min((float)dstW / src.Width, (float)dstH / src.Height);
-        var newW = (int)Math.Round(src.Width * scale);
-        var newH = (int)Math.Round(src.Height * scale);
+        bool layoutAOk = (strideA == expectedNoObj || strideA == expectedObj);
+        bool layoutBOk = (strideB == expectedNoObj || strideB == expectedObj);
 
-        var padX = (dstW - newW) / 2f;
-        var padY = (dstH - newH) / 2f;
-        pad = new PointF(padX, padY);
+        bool transposed;
+        int n, stride;
 
-        var bmp = new Bitmap(dstW, dstH);
-        using var g = Graphics.FromImage(bmp);
-        g.Clear(Color.FromArgb(114, 114, 114));
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        g.DrawImage(src, padX, padY, newW, newH);
-        return bmp;
-    }
-
-    private static DenseTensor<float> ImageToCHWFloat(Bitmap bmp)
-    {
-        var t = new DenseTensor<float>(new[] { 1, 3, bmp.Height, bmp.Width });
-
-        // LockBits nhanh hơn GetPixel, nhưng để đơn giản demo dùng GetPixel.
-        // Nếu realtime, bạn nên tối ưu LockBits.
-        for (int y = 0; y < bmp.Height; y++)
-            for (int x = 0; x < bmp.Width; x++)
-            {
-                var c = bmp.GetPixel(x, y);
-                t[0, 0, y, x] = c.R / 255f;
-                t[0, 1, y, x] = c.G / 255f;
-                t[0, 2, y, x] = c.B / 255f;
-            }
-
-        return t;
-    }
-
-    // ===== Postprocess =====
-
-    private sealed record RawBox(float X, float Y, float W, float H, float Score, int ClassId);
-
-    private static List<RawBox> ParseYolo(IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs, float confMin)
-    {
-        // chọn output đầu tiên
-        var o = outputs.First().AsTensor<float>();
-        var dims = o.Dimensions.ToArray();
-
-        // Convert tensor -> list box. Cố gắng hỗ trợ 2 kiểu phổ biến.
-        // case A: [1, N, K]
-        // case B: [1, K, N]
-        if (dims.Length == 3)
+        if (layoutBOk && !layoutAOk)
         {
-            int d1 = dims[1];
-            int d2 = dims[2];
-
-            // heuristic: K thường nhỏ hơn N (vd K= (4+1+nc), N=8400)
-            bool isNK = d1 > d2; // [1, N, K]
-            if (isNK)
-                return Parse_1_N_K(o, confMin);
-            else
-                return Parse_1_K_N(o, confMin);
+            transposed = true;   // [1,S,N]
+            stride = strideB;
+            n = nB;
+        }
+        else if (layoutAOk && !layoutBOk)
+        {
+            transposed = false;  // [1,N,S]
+            stride = strideA;
+            n = nA;
+        }
+        else
+        {
+            transposed = nB > nA;
+            stride = transposed ? strideB : strideA;
+            n = transposed ? nB : nA;
         }
 
-        // case C: [N, K]
-        if (dims.Length == 2)
-            return Parse_N_K(o, confMin);
+        if (n <= 0 || stride <= 0) return Array.Empty<DetectionResult>();
 
-        // fallback: rỗng
-        return new List<RawBox>();
-    }
+        bool hasObj;
+        int clsStart;
 
-    private static List<RawBox> Parse_1_N_K(Tensor<float> t, float confMin)
-    {
-        int N = t.Dimensions[1];
-        int K = t.Dimensions[2];
+        if (stride == expectedObj) { hasObj = true; clsStart = 5; }
+        else { hasObj = false; clsStart = 4; }
 
-        // Nếu là output đã NMS: [x1,y1,x2,y2,score,class] và N nhỏ
-        if (K == 6 && N <= 1000)
+        int clsCount = stride - clsStart;
+        if (clsCount <= 0) return Array.Empty<DetectionResult>();
+
+        float Get(int comp, int i) =>
+            !transposed ? outArr[i * stride + comp] : outArr[comp * n + i];
+
+        var boxes = new List<RawBox>(Math.Min(n, 2000));
+
+        for (int i = 0; i < n; i++)
         {
-            var res6 = new List<RawBox>();
-            for (int i = 0; i < N; i++)
-            {
-                float x1 = t[0, i, 0];
-                float y1 = t[0, i, 1];
-                float x2 = t[0, i, 2];
-                float y2 = t[0, i, 3];
-                float score = t[0, i, 4];
-                int cls = (int)t[0, i, 5];
-                if (score < confMin) continue;
-                res6.Add(new RawBox(x1, y1, x2 - x1, y2 - y1, score, cls));
-            }
-            return res6;
-        }
+            float cx = Get(0, i);
+            float cy = Get(1, i);
+            float w = Get(2, i);
+            float h = Get(3, i);
 
-        // ---- Try kiểu "NO objectness" (YOLOv11/v8 thường gặp): [cx,cy,w,h,cls...]
-        List<RawBox> noObj = new();
-        if (K >= 5)
-        {
-            int numClass = K - 4;
-            for (int i = 0; i < N; i++)
-            {
-                float cx = t[0, i, 0];
-                float cy = t[0, i, 1];
-                float w = t[0, i, 2];
-                float h = t[0, i, 3];
+            float obj = hasObj ? Get(4, i) : 1f;
+            if (hasObj && obj <= 0) continue;
 
-                int bestId = -1;
-                float bestCls = 0;
-                for (int c = 0; c < numClass; c++)
+            int bestCls = -1;
+            float bestProb = 0f;
+
+            for (int c = 0; c < clsCount; c++)
+            {
+                float p = Get(clsStart + c, i);
+                if (p > bestProb)
                 {
-                    float p = t[0, i, 4 + c];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
+                    bestProb = p;
+                    bestCls = c;
                 }
-
-                float score = bestCls;
-                if (score < confMin) continue;
-
-                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
             }
+
+            if (bestCls < 0) continue;
+
+            float score = hasObj ? (obj * bestProb) : bestProb;
+            if (score < confMin) continue;
+
+            boxes.Add(new RawBox { Cx = cx, Cy = cy, W = w, H = h, Score = score, ClassId = bestCls });
         }
 
-        // ---- Try kiểu "HAS objectness": [cx,cy,w,h,obj,cls...]
-        List<RawBox> withObj = new();
-        if (K >= 6)
+        if (boxes.Count == 0) return Array.Empty<DetectionResult>();
+
+        var keep = Nms(boxes, _nmsIou);
+
+        float sx = srcW / (float)inW;
+        float sy = srcH / (float)inH;
+
+        var dets = new List<DetectionResult>(keep.Count);
+        foreach (var b in keep)
         {
-            int numClass = K - 5;
-            for (int i = 0; i < N; i++)
+            if (!map.TryGetValue(b.ClassId, out var oc))
+                continue;
+
+            float x = (b.Cx - b.W / 2f) * sx;
+            float y = (b.Cy - b.H / 2f) * sy;
+            float ww = b.W * sx;
+            float hh = b.H * sy;
+
+            dets.Add(new DetectionResult
             {
-                float cx = t[0, i, 0];
-                float cy = t[0, i, 1];
-                float w = t[0, i, 2];
-                float h = t[0, i, 3];
-                float obj = t[0, i, 4];
-
-                int bestId = -1;
-                float bestCls = 0;
-                for (int c = 0; c < numClass; c++)
-                {
-                    float p = t[0, i, 5 + c];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
-                }
-
-                float score = obj * bestCls;
-                if (score < confMin) continue;
-
-                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
-            }
+                Class = oc,
+                Confidence = b.Score,
+                Box = new BoundingBox((int)x, (int)y, (int)ww, (int)hh)
+            });
         }
 
-        // Chọn parse nào ra nhiều box hơn (thực tế sẽ đúng cho model của bạn)
-        return noObj.Count >= withObj.Count ? noObj : withObj;
+        return dets.ToArray();
     }
 
-
-    private static List<RawBox> Parse_1_K_N(Tensor<float> t, float confMin)
+    private sealed class RawBox
     {
-        // [1, K, N]
-        int K = t.Dimensions[1];
-        int N = t.Dimensions[2];
-
-        // Heuristic: nếu là output đã NMS [x1,y1,x2,y2,score,cls] và N nhỏ
-        if (K == 6 && N <= 1000)
-        {
-            var res6 = new List<RawBox>();
-            for (int i = 0; i < N; i++)
-            {
-                float x1 = t[0, 0, i];
-                float y1 = t[0, 1, i];
-                float x2 = t[0, 2, i];
-                float y2 = t[0, 3, i];
-                float score = t[0, 4, i];
-                int cls = (int)t[0, 5, i];
-                if (score < confMin) continue;
-
-                res6.Add(new RawBox(x1, y1, x2 - x1, y2 - y1, score, cls));
-            }
-            return res6;
-        }
-
-        // ✅ YOLOv11/v8 thường gặp: KHÔNG objectness => [cx,cy,w,h,cls...]
-        var noObj = new List<RawBox>();
-        if (K >= 5)
-        {
-            int numClass = K - 4; // <- quan trọng: K=5 => numClass=1 (smoke)
-            for (int i = 0; i < N; i++)
-            {
-                float cx = t[0, 0, i];
-                float cy = t[0, 1, i];
-                float w = t[0, 2, i];
-                float h = t[0, 3, i];
-
-                int bestId = -1;
-                float bestCls = 0f;
-                for (int c = 0; c < numClass; c++)
-                {
-                    float p = t[0, 4 + c, i];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
-                }
-
-                float score = bestCls;
-                if (score < confMin) continue;
-                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
-            }
-        }
-
-        // (tuỳ chọn) nếu model thật sự có obj: [cx,cy,w,h,obj,cls...]
-        var withObj = new List<RawBox>();
-        if (K >= 6)
-        {
-            int numClass = K - 5;
-            for (int i = 0; i < N; i++)
-            {
-                float cx = t[0, 0, i];
-                float cy = t[0, 1, i];
-                float w = t[0, 2, i];
-                float h = t[0, 3, i];
-                float obj = t[0, 4, i];
-
-                int bestId = -1;
-                float bestCls = 0f;
-                for (int c = 0; c < numClass; c++)
-                {
-                    float p = t[0, 5 + c, i];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
-                }
-
-                float score = obj * bestCls;
-                if (score < confMin) continue;
-                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
-            }
-        }
-
-        // Chọn nhánh ra nhiều box hơn
-        return noObj.Count >= withObj.Count ? noObj : withObj;
+        public float Cx, Cy, W, H, Score;
+        public int ClassId;
     }
 
-
-
-    private static List<RawBox> Parse_N_K(Tensor<float> t, float confMin)
-    {
-        int N = t.Dimensions[0];
-        int K = t.Dimensions[1];
-
-        if (K == 6 && N <= 1000)
-        {
-            var res6 = new List<RawBox>();
-            for (int i = 0; i < N; i++)
-            {
-                float x1 = t[i, 0];
-                float y1 = t[i, 1];
-                float x2 = t[i, 2];
-                float y2 = t[i, 3];
-                float score = t[i, 4];
-                int cls = (int)t[i, 5];
-                if (score < confMin) continue;
-
-                res6.Add(new RawBox(x1, y1, x2 - x1, y2 - y1, score, cls));
-            }
-            return res6;
-        }
-
-        // ✅ no-objectness: [cx,cy,w,h,cls...]
-        var noObj = new List<RawBox>();
-        if (K >= 5)
-        {
-            int numClass = K - 4; // K=5 => 1 class
-            for (int i = 0; i < N; i++)
-            {
-                float cx = t[i, 0];
-                float cy = t[i, 1];
-                float w = t[i, 2];
-                float h = t[i, 3];
-
-                int bestId = -1;
-                float bestCls = 0f;
-                for (int c = 0; c < numClass; c++)
-                {
-                    float p = t[i, 4 + c];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
-                }
-
-                float score = bestCls;
-                if (score < confMin) continue;
-                noObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
-            }
-        }
-
-        // (tuỳ chọn) has-objectness
-        var withObj = new List<RawBox>();
-        if (K >= 6)
-        {
-            int numClass = K - 5;
-            for (int i = 0; i < N; i++)
-            {
-                float cx = t[i, 0];
-                float cy = t[i, 1];
-                float w = t[i, 2];
-                float h = t[i, 3];
-                float obj = t[i, 4];
-
-                int bestId = -1;
-                float bestCls = 0f;
-                for (int c = 0; c < numClass; c++)
-                {
-                    float p = t[i, 5 + c];
-                    if (p > bestCls) { bestCls = p; bestId = c; }
-                }
-
-                float score = obj * bestCls;
-                if (score < confMin) continue;
-                withObj.Add(new RawBox(cx - w / 2, cy - h / 2, w, h, score, bestId));
-            }
-        }
-
-        return noObj.Count >= withObj.Count ? noObj : withObj;
-    }
-
-
-
-    private static List<RawBox> Nms(List<RawBox> boxes, float iouThres)
+    private List<RawBox> Nms(List<RawBox> boxes, float iouThres)
     {
         var sorted = boxes.OrderByDescending(b => b.Score).ToList();
-        var keep = new List<RawBox>(sorted.Count);
+        var keep = new List<RawBox>();
 
         while (sorted.Count > 0)
         {
-            var best = sorted[0];
-            keep.Add(best);
+            var cur = sorted[0];
+            keep.Add(cur);
             sorted.RemoveAt(0);
 
             for (int i = sorted.Count - 1; i >= 0; i--)
             {
-                if (sorted[i].ClassId != best.ClassId) continue;
-                if (IoU(best, sorted[i]) >= iouThres)
+                if (IoU(cur, sorted[i]) >= iouThres)
                     sorted.RemoveAt(i);
             }
         }
         return keep;
     }
 
-    private static float IoU(RawBox a, RawBox b)
+    private float IoU(RawBox a, RawBox b)
     {
-        float ax2 = a.X + a.W;
-        float ay2 = a.Y + a.H;
-        float bx2 = b.X + b.W;
-        float by2 = b.Y + b.H;
+        float ax1 = a.Cx - a.W / 2f;
+        float ay1 = a.Cy - a.H / 2f;
+        float ax2 = a.Cx + a.W / 2f;
+        float ay2 = a.Cy + a.H / 2f;
 
-        float x1 = Math.Max(a.X, b.X);
-        float y1 = Math.Max(a.Y, b.Y);
+        float bx1 = b.Cx - b.W / 2f;
+        float by1 = b.Cy - b.H / 2f;
+        float bx2 = b.Cx + b.W / 2f;
+        float by2 = b.Cy + b.H / 2f;
+
+        float x1 = Math.Max(ax1, bx1);
+        float y1 = Math.Max(ay1, by1);
         float x2 = Math.Min(ax2, bx2);
         float y2 = Math.Min(ay2, by2);
 
         float inter = Math.Max(0, x2 - x1) * Math.Max(0, y2 - y1);
-        float union = a.W * a.H + b.W * b.H - inter;
+        float areaA = a.W * a.H;
+        float areaB = b.W * b.H;
+        float union = areaA + areaB - inter;
 
         return union <= 0 ? 0 : inter / union;
     }
 
-    public void Dispose()
+    private static DenseTensor<float> BitmapToCHWTensor(Bitmap bmp)
     {
-        _ppe.Dispose();
-        _smoke.Dispose();
+        int w = bmp.Width;
+        int h = bmp.Height;
+
+        using var src24 = bmp.PixelFormat == PixelFormat.Format24bppRgb ? null : ConvertTo24bpp(bmp);
+        var useBmp = src24 ?? bmp;
+
+        var tensor = new DenseTensor<float>(new[] { 1, 3, h, w });
+
+        var rect = new Rectangle(0, 0, w, h);
+        var data = useBmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+
+        try
+        {
+            int stride = data.Stride;
+            int bytes = Math.Abs(stride) * h;
+            var buffer = new byte[bytes];
+            Marshal.Copy(data.Scan0, buffer, 0, bytes);
+
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < w; x++)
+                {
+                    int idx = row + x * 3;
+                    byte b = buffer[idx + 0];
+                    byte g = buffer[idx + 1];
+                    byte r = buffer[idx + 2];
+
+                    tensor[0, 0, y, x] = r / 255f;
+                    tensor[0, 1, y, x] = g / 255f;
+                    tensor[0, 2, y, x] = b / 255f;
+                }
+            }
+        }
+        finally
+        {
+            useBmp.UnlockBits(data);
+        }
+
+        return tensor;
+
+        static Bitmap ConvertTo24bpp(Bitmap src)
+        {
+            var dst = new Bitmap(src.Width, src.Height, PixelFormat.Format24bppRgb);
+            using var g = Graphics.FromImage(dst);
+            g.DrawImage(src, 0, 0, src.Width, src.Height);
+            return dst;
+        }
     }
 
-    private static void HardLog(string s)
+    public void Dispose()
     {
-        Debug.WriteLine(s);
-        File.AppendAllText(
-            Path.Combine(Path.GetTempPath(), "ort_startup.log"),
-            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {s}{Environment.NewLine}"
-        );
+        try { _ppe?.Dispose(); } catch { }
+        try { _smoke?.Dispose(); } catch { }
+        _ppe = null;
+        _smoke = null;
     }
 }

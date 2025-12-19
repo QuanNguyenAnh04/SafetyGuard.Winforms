@@ -17,6 +17,10 @@ public sealed class OfflinePage : UserControl
     private string? _selected;
     private bool _running;
 
+    // Match RealtimePage offline identifiers (so realtime "Live Events" can filter them out)
+    private const string OfflineCameraId = "offline";
+    private const string OfflineCameraName = "Offline Import";
+
     // UI
     private Label _lblFile = null!;
     private Label _lblStatus = null!;
@@ -31,506 +35,333 @@ public sealed class OfflinePage : UserControl
     public OfflinePage(AppBootstrap app)
     {
         _app = app;
+
         Dock = DockStyle.Fill;
         BackColor = AppColors.ContentBg;
 
-        BuildUI();
+        BuildUi();
+
+        // show OFFLINE violations (log-once-per-track) in this page
+        _app.Engine.OnViolationCreated += v =>
+        {
+            if (!_running) return;
+            if (!string.Equals(v.CameraId, OfflineCameraId, StringComparison.OrdinalIgnoreCase)) return;
+            BeginInvoke((Action)(() => AddViolationEvent(v)));
+        };
     }
 
-    private void BuildUI()
+    private void BuildUi()
     {
-        Controls.Clear();
-
-        var card = ControlFactory.Card();
-        card.Dock = DockStyle.Fill;
-        card.Padding = new Padding(16);
-        Controls.Add(card);
-
-        // Root layout: TOP (132) + MAIN (Fill) + PROGRESS (16)
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 16));
-        card.Controls.Add(root);
-
-        // ===== TOP =====
-        var top = new Guna2Panel
-        {
-            BorderRadius = 14,
-            FillColor = Color.White,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(16),
-            Margin = Padding.Empty
-        };
-        top.ShadowDecoration.Enabled = false;
-        root.Controls.Add(top, 0, 0);
-
-        var topLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 1,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
+            RowCount = 2,
+            Padding = new Padding(18),
         };
-        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.Controls.Add(topLayout);
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        Controls.Add(root);
 
-        var info = new TableLayoutPanel
+        // top bar
+        var bar = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        info.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-
-        var title = ControlFactory.Muted("Offline Analysis", 12, true);
-        title.Dock = DockStyle.Fill;
-        title.TextAlign = ContentAlignment.MiddleLeft;
-
-        _lblFile = ControlFactory.Muted("No file selected.", 9);
-        _lblFile.Dock = DockStyle.Fill;
-        _lblFile.AutoEllipsis = true;
-
-        _lblStatus = ControlFactory.Muted("Idle", 9);
-        _lblStatus.Dock = DockStyle.Fill;
-        _lblStatus.AutoEllipsis = true;
-
-        info.Controls.Add(title, 0, 0);
-        info.Controls.Add(_lblFile, 0, 1);
-        info.Controls.Add(_lblStatus, 0, 2);
-
-        topLayout.Controls.Add(info, 0, 0);
-
-        var btns = new FlowLayoutPanel
-        {
             AutoSize = true,
             WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(12, 0, 0, 0),
-            Padding = Padding.Empty
+            BackColor = AppColors.ContentBg,
+            Padding = new Padding(0, 0, 0, 10)
         };
-        topLayout.Controls.Add(btns, 1, 0);
+        root.Controls.Add(bar, 0, 0);
+        root.SetColumnSpan(bar, 2);
 
         _btnBrowse = new Guna2Button
         {
-            Text = "Browse",
+            Text = "Chọn file",
             BorderRadius = 10,
+            Height = 36,
+            Width = 110,
             FillColor = AppColors.PrimaryBlue,
             ForeColor = Color.White,
-            Size = new Size(110, 38),
-            Margin = new Padding(0, 0, 10, 0)
         };
         _btnBrowse.Click += (_, _) => Browse();
+        bar.Controls.Add(_btnBrowse);
 
         _btnRun = new Guna2Button
         {
-            Text = "Run Detection",
+            Text = "Chạy",
             BorderRadius = 10,
+            Height = 36,
+            Width = 90,
             FillColor = AppColors.GoodGreen,
             ForeColor = Color.White,
-            Size = new Size(140, 38),
-            Margin = new Padding(0, 0, 10, 0)
         };
         _btnRun.Click += async (_, _) => await RunAsync();
+        bar.Controls.Add(_btnRun);
 
         _btnClear = new Guna2Button
         {
-            Text = "Clear Log",
+            Text = "Clear events",
             BorderRadius = 10,
-            FillColor = Color.FromArgb(238, 242, 248),
-            ForeColor = Color.FromArgb(60, 70, 90),
-            Size = new Size(110, 38),
-            Margin = new Padding(0, 0, 0, 0)
+            Height = 36,
+            Width = 120,
+            FillColor = AppColors.ContentBg,     // thay CardBorder
+            ForeColor = AppColors.MutedText,     // thay TextPrimary
+            BorderThickness = 1,
+            BorderColor = Color.FromArgb(210, 220, 235)
         };
-        _btnClear.Click += (_, _) => Ui(() => _events.Items.Clear());
+        _btnClear.Click += (_, _) => _events.Items.Clear();
+        bar.Controls.Add(_btnClear);
 
-        btns.Controls.Add(_btnBrowse);
-        btns.Controls.Add(_btnRun);
-        btns.Controls.Add(_btnClear);
-
-        // Drag/drop
-        top.AllowDrop = true;
-        top.DragEnter += (_, e) =>
+        _lblFile = new Label
         {
-            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-                e.Effect = DragDropEffects.Copy;
+            AutoSize = true,
+            ForeColor = AppColors.MutedText,
+            Padding = new Padding(10, 8, 0, 0),
+            Text = "Chưa chọn file"
         };
-        top.DragDrop += (_, e) =>
-        {
-            var files = (string[]?)e.Data?.GetData(DataFormats.FileDrop);
-            if (files is { Length: > 0 }) SetSelected(files[0]);
-        };
+        bar.Controls.Add(_lblFile);
 
-        // ===== MAIN =====
-        var main = new TableLayoutPanel
+        _lblStatus = new Label
+        {
+            AutoSize = true,
+            ForeColor = AppColors.MutedText,
+            Padding = new Padding(10, 8, 0, 0),
+            Text = ""
+        };
+        bar.Controls.Add(_lblStatus);
+
+        _progress = new ProgressBar
+        {
+            Width = 220,
+            Height = 16,
+            Visible = false
+        };
+        bar.Controls.Add(_progress);
+
+        // left preview
+        var leftCard = new Guna2Panel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            Padding = new Padding(0, 14, 0, 0),
-            Margin = Padding.Empty
-        };
-        main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
-        main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-        root.Controls.Add(main, 0, 1);
-
-        // Preview card
-        var previewCard = new Guna2Panel
-        {
             BorderRadius = 14,
-            FillColor = Color.White,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 12, 0)
+            FillColor = AppColors.CardBg,
+            Padding = new Padding(12)
         };
-        previewCard.ShadowDecoration.Enabled = false;
-        main.Controls.Add(previewCard, 0, 0);
-
-        var pvLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        pvLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        pvLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        previewCard.Controls.Add(pvLayout);
-
-        var pvTitle = ControlFactory.Muted("Preview", 10, true);
-        pvTitle.Dock = DockStyle.Fill;
-        pvTitle.TextAlign = ContentAlignment.MiddleLeft;
-        pvLayout.Controls.Add(pvTitle, 0, 0);
+        root.Controls.Add(leftCard, 0, 1);
 
         _preview = new PictureBox
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(22, 22, 22),
-            SizeMode = PictureBoxSizeMode.Zoom,
-            Margin = Padding.Empty
+            BackColor = Color.Black,
+            SizeMode = PictureBoxSizeMode.Zoom
         };
-        pvLayout.Controls.Add(_preview, 0, 1);
+        leftCard.Controls.Add(_preview);
 
-        // Event card
-        var eventCard = new Guna2Panel
+        // right list
+        var rightCard = new Guna2Panel
         {
+            Dock = DockStyle.Fill,
             BorderRadius = 14,
-            FillColor = Color.White,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            Margin = Padding.Empty
+            FillColor = AppColors.CardBg,
+            Padding = new Padding(12)
         };
-        eventCard.ShadowDecoration.Enabled = false;
-        main.Controls.Add(eventCard, 1, 0);
+        root.Controls.Add(rightCard, 1, 1);
 
-        var evLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        evLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        evLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        eventCard.Controls.Add(evLayout);
-
-        var evHeader = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
-
-        var evTitle = ControlFactory.Muted("Live Event Log", 10, true);
-        evTitle.Dock = DockStyle.Left;
-        evTitle.Width = 160;
-        evTitle.TextAlign = ContentAlignment.MiddleLeft;
-
-        var btnClearMini = new Guna2Button
-        {
-            Text = "Clear",
-            BorderRadius = 8,
-            Size = new Size(80, 28),
-            Dock = DockStyle.Right,
-            FillColor = Color.FromArgb(238, 242, 248),
-            ForeColor = Color.FromArgb(60, 70, 90),
-            Margin = Padding.Empty
-        };
-        btnClearMini.Click += (_, _) => Ui(() => _events.Items.Clear());
-
-        evHeader.Controls.Add(btnClearMini);
-        evHeader.Controls.Add(evTitle);
-
-        evLayout.Controls.Add(evHeader, 0, 0);
-
-        _events = new DoubleBufferedListView
+        _events = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
-            GridLines = false,
-            HideSelection = false,
-            MultiSelect = false,
-            Margin = Padding.Empty
+            GridLines = true
         };
-        _events.Columns.Add("Time", 80);
-        _events.Columns.Add("Type", 115);
-        _events.Columns.Add("Level", 75);
-        _events.Columns.Add("Conf", 60);
-
-        _events.Resize += (_, _) =>
-        {
-            var w = _events.ClientSize.Width;
-            if (w <= 10 || _events.Columns.Count < 4) return;
-
-            _events.Columns[0].Width = 80;
-            _events.Columns[2].Width = 75;
-            _events.Columns[3].Width = 60;
-            _events.Columns[1].Width = Math.Max(120, w - (80 + 75 + 60 + 8));
-        };
-
-        evLayout.Controls.Add(_events, 0, 1);
-
-        // ===== PROGRESS =====
-        _progress = new ProgressBar
-        {
-            Dock = DockStyle.Fill,
-            Height = 16,
-            Visible = false,
-            Margin = Padding.Empty
-        };
-        root.Controls.Add(_progress, 0, 2);
+        _events.Columns.Add("Time", 90);
+        _events.Columns.Add("Class", 140);
+        _events.Columns.Add("Level", 90);
+        _events.Columns.Add("Conf", 70);
+        rightCard.Controls.Add(_events);
     }
 
     private void Browse()
     {
-        using var ofd = new OpenFileDialog
+        using var dlg = new OpenFileDialog
         {
-            Filter = "Video/Image|*.mp4;*.avi;*.mkv;*.mov;*.jpg;*.jpeg;*.png",
-            Multiselect = false
+            Filter = "Media (*.mp4;*.avi;*.mkv;*.jpg;*.png)|*.mp4;*.avi;*.mkv;*.jpg;*.png|All files (*.*)|*.*",
+            Title = "Chọn video hoặc ảnh"
         };
-        if (ofd.ShowDialog(this) != DialogResult.OK) return;
 
-        SetSelected(ofd.FileName);
-    }
+        if (dlg.ShowDialog() != DialogResult.OK) return;
 
-    private void SetSelected(string path)
-    {
-        _selected = path;
-        _lblFile.Text = path;
-        _lblStatus.Text = "Ready";
+        _selected = dlg.FileName;
+        _lblFile.Text = Path.GetFileName(_selected);
+        _lblStatus.Text = "";
     }
 
     private async Task RunAsync()
     {
         if (_running) return;
-
         if (string.IsNullOrWhiteSpace(_selected) || !File.Exists(_selected))
         {
-            MessageBox.Show(this, "Please select a file first.", "Offline", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _lblStatus.Text = "Chưa chọn file hợp lệ.";
             return;
         }
 
         _running = true;
-        SetRunningUI(true);
+        ToggleUi(false);
+        _events.Items.Clear();
 
-        Ui(() =>
-        {
-            _events.Items.Clear();
-            _progress.Value = 0;
-        });
+        _app.Engine.ResetSession(OfflineCameraId);
 
-        var camId = "offline";
-        var camName = "Offline Import";
+        _progress.Visible = true;
+        _progress.Value = 0;
 
-        var ext = Path.GetExtension(_selected).ToLowerInvariant();
-        var isImage = ext is ".jpg" or ".jpeg" or ".png";
+        _lblStatus.Text = "Đang chạy…";
 
         try
         {
-            await Task.Run(() =>
+            var ext = Path.GetExtension(_selected).ToLowerInvariant();
+            bool isImage = ext is ".jpg" or ".jpeg" or ".png" or ".bmp";
+            bool isVideo = ext is ".mp4" or ".avi" or ".mkv" or ".mov";
+
+            if (isImage)
             {
-                if (isImage)
+                await Task.Run(() =>
                 {
-                    Ui(() => _lblStatus.Text = "Analyzing image...");
                     _app.Offline.AnalyzeImage(
                         _selected!,
-                        camId,
-                        camName,
-                        onFrame: (bmp, dets) =>
+                        cameraId: OfflineCameraId,
+                        cameraName: OfflineCameraName,
+                        onFrame: (frame, dets) =>
                         {
-                            UpdatePreview(bmp, dets);
-                            AddEvents(dets);
-                            bmp.Dispose();
+                            BeginInvoke((Action)(() =>
+                            {
+                                UpdatePreview(frame, dets);
+                            }));
                         },
-                        forceCreate: true
-                    );
-                    Ui(() => _progress.Value = 100);
-                }
-                else
+                        forceCreate: true);
+                });
+            }
+            else if (isVideo)
+            {
+                await Task.Run(() =>
                 {
-                    Ui(() => _lblStatus.Text = "Analyzing video...");
-
-                    int sampleEveryNFrames = 10;
-
                     _app.Offline.AnalyzeVideo(
                         _selected!,
-                        camId,
-                        camName,
-                        sampleEveryNFrames: sampleEveryNFrames,
+                        cameraId: OfflineCameraId,
+                        cameraName: OfflineCameraName,
+                        sampleEveryNFrames: 10,
                         progress: (i, total) =>
                         {
-                            Ui(() =>
+                            BeginInvoke((Action)(() =>
                             {
-                                _progress.Visible = true;
-                                var pct = Math.Min(100, (int)(i * 100.0 / Math.Max(1, total)));
-                                _progress.Value = pct;
-                            });
+                                _progress.Maximum = Math.Max(1, total);
+                                _progress.Value = Math.Min(_progress.Maximum, Math.Max(0, i));
+                                _lblStatus.Text = $"Frame {i}/{total}";
+                            }));
                         },
-                        onFrame: (bmp, dets) =>
+                        onFrame: (frame, dets) =>
                         {
-                            UpdatePreview(bmp, dets);
-                            AddEvents(dets);
-                            bmp.Dispose();
+                            BeginInvoke((Action)(() =>
+                            {
+                                UpdatePreview(frame, dets);
+                            }));
                         },
-                        forceCreate: true
-                    );
-                }
-            });
-
-            Ui(() => _lblStatus.Text = "Done. Events saved to History.");
-            MessageBox.Show(this, "Offline analysis complete.\nCheck History & Evidence.", "Offline",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        forceCreate: true);
+                });
+            }
+            else
+            {
+                _lblStatus.Text = "Chỉ hỗ trợ ảnh/video phổ biến.";
+            }
         }
         catch (Exception ex)
         {
-            _app.Logs.Error("Offline run failed: " + ex);
-            Ui(() => _lblStatus.Text = "Failed: " + ex.Message);
-            MessageBox.Show(this, ex.Message, "Offline", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _lblStatus.Text = "Lỗi: " + ex.Message;
         }
         finally
         {
+            _progress.Visible = false;
+            ToggleUi(true);
             _running = false;
-            SetRunningUI(false);
+            _lblStatus.Text = "Xong.";
         }
     }
 
-    private void SetRunningUI(bool running)
+    private void ToggleUi(bool enabled)
     {
-        Ui(() =>
-        {
-            _btnBrowse.Enabled = !running;
-            _btnRun.Enabled = !running;
-            _btnClear.Enabled = !running;
-
-            _progress.Visible = running;
-            if (!running) _progress.Value = 0;
-        });
+        _btnBrowse.Enabled = enabled;
+        _btnRun.Enabled = enabled;
+        _btnClear.Enabled = enabled;
     }
 
-    private void UpdatePreview(Bitmap frame, Detection[] dets)
+    private void UpdatePreview(Bitmap frame, DetectionResult[] dets)
     {
-        var annotated = (Bitmap)frame.Clone();
-        using (var g = Graphics.FromImage(annotated))
-        using (var font = new Font("Segoe UI", 10, FontStyle.Bold))
+        // vẽ overlay đơn giản
+        var bmp = (Bitmap)frame.Clone();
+        using var g = Graphics.FromImage(bmp);
+        g.DrawString($"dets={dets.Length}", new Font("Segoe UI", 12, FontStyle.Bold), Brushes.Yellow, 10, 10);
+
+        using var font = new Font("Segoe UI", 10, FontStyle.Bold);
+
+        foreach (var d in dets.OrderByDescending(x => x.Confidence).Take(30))
         {
-            foreach (var d in dets)
-            {
-                var color = ColorFor(d.Type);
-                using var pen = new Pen(color, 2);
+            var rect = d.Box.ToRectClamped(bmp.Width, bmp.Height);
+            var color = ColorFor(d.Class);
+            using var pen = new Pen(color, 2);
+            g.DrawRectangle(pen, rect);
 
-                var r = new Rectangle(
-                    (int)d.Box.X,
-                    (int)d.Box.Y,
-                    (int)d.Box.W,
-                    (int)d.Box.H
-                );
-
-                r = Rectangle.Intersect(r, new Rectangle(0, 0, annotated.Width - 1, annotated.Height - 1));
-                if (r.Width <= 1 || r.Height <= 1) continue;
-
-                g.DrawRectangle(pen, r);
-
-                var label = $"{d.Type} {(d.Confidence * 100):0}%";
-                var sz = g.MeasureString(label, font);
-
-                var bgRect = new RectangleF(r.X, Math.Max(0, r.Y - sz.Height - 4), sz.Width + 10, sz.Height + 6);
-                using var bg = new SolidBrush(Color.FromArgb(160, 0, 0, 0));
-                using var fg = new SolidBrush(Color.White);
-
-                g.FillRectangle(bg, bgRect);
-                g.DrawString(label, font, fg, bgRect.X + 5, bgRect.Y + 3);
-            }
+            var label = $"{d.Class} {(d.Confidence * 100):0}%";
+            var size = g.MeasureString(label, font);
+            g.FillRectangle(new SolidBrush(Color.FromArgb(160, 0, 0, 0)), rect.X, Math.Max(0, rect.Y - size.Height), size.Width + 8, size.Height + 2);
+            g.DrawString(label, font, Brushes.White, rect.X + 4, Math.Max(0, rect.Y - size.Height));
         }
 
-        Ui(() =>
-        {
-            _preview.Image?.Dispose();
-            _preview.Image = annotated;
-        });
+        var old = _preview.Image;
+        _preview.Image = bmp;
+        old?.Dispose();
+        frame.Dispose();
     }
 
-    private void AddEvents(Detection[] dets)
+    private void AddViolationEvent(ViolationRecord v)
     {
-        if (dets == null || dets.Length == 0) return;
+        // ✅ Only log violations created by ViolationEngine (đã chống spam theo TrackId)
+        var it = new ListViewItem(v.TimeUtc.ToLocalTime().ToString("HH:mm:ss"));
 
-        var rules = _app.Settings.Current.Rules;
+        // show type + track id for clarity
+        var cls = v.TrackId.HasValue ? $"{v.Type} (track {v.TrackId.Value})" : v.Type.ToString();
+        it.SubItems.Add(cls);
+        it.SubItems.Add(v.Level.ToString());
+        it.SubItems.Add($"{v.Confidence * 100:0}%");
 
-        Ui(() =>
+        it.ForeColor = v.Type switch
         {
-            foreach (var d in dets.OrderByDescending(x => x.Confidence).Take(6))
-            {
-                var lvl = rules.FirstOrDefault(r => r.Type == d.Type)?.Level ?? ViolationLevel.Warning;
+            ViolationType.NoHelmet => Color.Red,
+            ViolationType.NoVest => Color.Orange,
+            ViolationType.NoGloves => Color.DeepSkyBlue,
+            ViolationType.Smoking => Color.MediumPurple,
+            _ => Color.White
+        };
 
-                var it = new ListViewItem(DateTime.Now.ToString("HH:mm:ss"));
-                it.SubItems.Add(d.Type.ToString());
-                it.SubItems.Add(lvl.ToString());
-                it.SubItems.Add($"{d.Confidence * 100:0}%");
-                it.ForeColor = ColorFor(d.Type);
-
-                _events.Items.Insert(0, it);
-            }
-
-            while (_events.Items.Count > 250)
-                _events.Items.RemoveAt(_events.Items.Count - 1);
-        });
+        _events.Items.Insert(0, it);
     }
 
-    private static Color ColorFor(ViolationType t) => t switch
+    private static Color ColorFor(ObjectClass c) => c switch
     {
-        ViolationType.NoHelmet => Color.Red,
-        ViolationType.NoVest => Color.Orange,
-        ViolationType.Smoking => Color.MediumPurple,
-        _ => Color.DeepSkyBlue
+        ObjectClass.NoHelmet => Color.Red,
+        ObjectClass.NoVest => Color.Orange,
+        ObjectClass.NoGloves => Color.DeepSkyBlue,
+        ObjectClass.Smoking => Color.MediumPurple,
+        ObjectClass.Person => Color.Lime,
+        _ => Color.White
     };
 
-    private void Ui(Action a)
+    private static ViolationType? ToViolationType(ObjectClass c) => c switch
     {
-        if (IsDisposed) return;
-        if (InvokeRequired) BeginInvoke(a);
-        else a();
-    }
-
-    // Giảm flicker khi insert items liên tục
-    private sealed class DoubleBufferedListView : ListView
-    {
-        public DoubleBufferedListView()
-        {
-            DoubleBuffered = true;
-            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
-            UpdateStyles();
-        }
-    }
+        ObjectClass.NoHelmet => ViolationType.NoHelmet,
+        ObjectClass.NoVest => ViolationType.NoVest,
+        ObjectClass.NoGloves => ViolationType.NoGloves,
+        ObjectClass.Smoking => ViolationType.Smoking,
+        _ => null
+    };
 }

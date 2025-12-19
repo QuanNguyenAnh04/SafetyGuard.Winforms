@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Drawing;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
@@ -20,36 +21,23 @@ public sealed class OfflineAnalyzer
         _logs = logs;
     }
 
-    // ===== Backward compatible API (giữ cho code cũ) =====
-    public void AnalyzeImage(string path, string cameraId, string cameraName)
-        => AnalyzeImage(path, cameraId, cameraName, onFrame: null, forceCreate: true);
-
-    public void AnalyzeVideo(string path, string cameraId, string cameraName, int sampleEveryNFrames = 10, Action<int, int>? progress = null)
-        => AnalyzeVideo(path, cameraId, cameraName, sampleEveryNFrames, progress, onFrame: null, forceCreate: true);
-
-    // ===== New API (dùng cho UI preview + event log) =====
-
     public void AnalyzeImage(
         string path,
         string cameraId,
         string cameraName,
-        Action<Bitmap, Detection[]>? onFrame,
+        Action<Bitmap, DetectionResult[]>? onFrame,
         bool forceCreate = true)
     {
         using var bmp = (Bitmap)Bitmap.FromFile(path);
-        var detections = _detector.Detect(bmp);
 
-        // ✅ Lưu event vào DB qua engine (forceCreate để ảnh đơn vẫn tạo record)
-        _engine.ProcessDetections(cameraId, cameraName, bmp, detections, forceCreate: true);
+        var dets = _detector.Detect(bmp);
+        _engine.ResetSession(cameraId);
+        _engine.ProcessDetections(cameraId, cameraName, bmp, dets, forceCreate: forceCreate);
 
-        // ✅ push frame + detection ra UI
-        if (onFrame != null)
-        {
-            using var clone = (Bitmap)bmp.Clone();
-            onFrame(clone, detections);
-        }
+        _logs.Info($"[OFFLINE][IMG] {path} dets={dets.Length}");
+        Debug.WriteLine($"[OFFLINE][IMG] dets={dets.Length}");
 
-        _logs.Info($"Offline image analyzed: {path} det={detections.Length}");
+        onFrame?.Invoke((Bitmap)bmp.Clone(), dets);
     }
 
     public void AnalyzeVideo(
@@ -58,57 +46,95 @@ public sealed class OfflineAnalyzer
         string cameraName,
         int sampleEveryNFrames,
         Action<int, int>? progress,
-        Action<Bitmap, Detection[]>? onFrame,
+        Action<Bitmap, DetectionResult[]>? onFrame,
         bool forceCreate = true)
     {
+        _logs.Info($"[OFFLINE][VID] Open: {path}");
+        Debug.WriteLine($"[OFFLINE][VID] Open: {path}");
+
         using var cap = new VideoCapture(path);
+
         if (!cap.IsOpened())
         {
-            _logs.Error("Offline video open failed: " + path);
-            return;
+            var msg = "OpenCv VideoCapture cannot open this video. " +
+                      "Bạn cần cài NuGet OpenCvSharp4.runtime.win (x64) hoặc thiếu codec/ffmpeg.";
+            _logs.Error("[OFFLINE][VID] " + msg);
+            throw new InvalidOperationException(msg);
         }
 
-        var total = (int)cap.Get(VideoCaptureProperties.FrameCount);
-        if (total <= 0) total = 1;
+        int total = (int)cap.Get(VideoCaptureProperties.FrameCount);
+        double fps = cap.Get(VideoCaptureProperties.Fps);
+        _logs.Info($"[OFFLINE][VID] Opened OK. FrameCount={total}, FPS={fps:0.##}");
+        Debug.WriteLine($"[OFFLINE][VID] Opened OK. FrameCount={total}, FPS={fps:0.##}");
 
         using var mat = new Mat();
+
+        // ✅ đọc thử frame đầu để xác nhận decode OK
+        if (!cap.Read(mat) || mat.Empty())
+        {
+            var msg = "Video opened but cannot read frames (decode fail). " +
+                      "Rất thường do thiếu OpenCvSharp4.runtime.win hoặc thiếu ffmpeg.";
+            _logs.Error("[OFFLINE][VID] " + msg);
+            throw new InvalidOperationException(msg);
+        }
+
+        // rewind về đầu (vì đã đọc 1 frame)
+        cap.Set(VideoCaptureProperties.PosFrames, 0);
+
+        _engine.ResetSession(cameraId);
+
         int idx = 0;
+
+        // throttle UI preview (tránh BeginInvoke queue làm RAM tăng)
+        long lastUi = 0;
+        long uiInterval = (long)(Stopwatch.Frequency / 6.0); // ~6 FPS preview max
 
         while (cap.Read(mat) && !mat.Empty())
         {
             idx++;
 
-            // sample frame
-            if (sampleEveryNFrames > 1 && (idx % sampleEveryNFrames != 0))
+            if (sampleEveryNFrames > 1 && (idx % sampleEveryNFrames) != 0)
             {
                 progress?.Invoke(idx, total);
                 continue;
             }
 
             using var bmp = BitmapConverter.ToBitmap(mat);
-            var detections = _detector.Detect(bmp);
-            _logs.Info($"[OFFLINE] dets={detections.Length}");
-            if (detections.Length > 0)
+
+            DetectionResult[] dets;
+            try
             {
-                var top = detections.OrderByDescending(x => x.Confidence).Take(3)
-                    .Select(x => $"{x.Type}:{x.Confidence:0.00}");
-                _logs.Info("[OFFLINE] top=" + string.Join(", ", top));
+                dets = _detector.Detect(bmp);
+            }
+            catch (Exception ex)
+            {
+                _logs.Error("[OFFLINE][VID] Detect crash: " + ex.Message);
+                throw;
             }
 
+            // ✅ log ít nhưng chắc chắn có
+            if (idx == 1 || idx % (sampleEveryNFrames * 20) == 0)
+            {
+                _logs.Info($"[OFFLINE][VID] frame={idx}/{total} dets={dets.Length}");
+                Debug.WriteLine($"[OFFLINE][VID] frame={idx}/{total} dets={dets.Length}");
+            }
 
-            // ✅ Lưu event vào DB
-            _engine.ProcessDetections(cameraId, cameraName, bmp, detections, forceCreate: forceCreate);
+            _engine.ProcessDetections(cameraId, cameraName, bmp, dets, forceCreate: forceCreate);
 
-            // ✅ UI preview + event log
             if (onFrame != null)
             {
-                using var clone = (Bitmap)bmp.Clone();
-                onFrame(clone, detections);
+                var now = Stopwatch.GetTimestamp();
+                if (idx == 1 || now - lastUi >= uiInterval) // ✅ frame đầu luôn show
+                {
+                    lastUi = now;
+                    onFrame((Bitmap)bmp.Clone(), dets); // UI dispose clone
+                }
             }
 
             progress?.Invoke(idx, total);
         }
 
-        _logs.Info($"Offline video analyzed: {path}");
+        _logs.Info("[OFFLINE][VID] Done.");
+        Debug.WriteLine("[OFFLINE][VID] Done.");
     }
 }

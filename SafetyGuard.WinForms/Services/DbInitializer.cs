@@ -49,11 +49,15 @@ public static class DbInitializer
           clip_path TEXT,
           notes TEXT
         );
+        
 
         CREATE INDEX IF NOT EXISTS idx_viol_time ON violations(time_utc_ms);
         CREATE INDEX IF NOT EXISTS idx_viol_type ON violations(type);
         CREATE INDEX IF NOT EXISTS idx_viol_status ON violations(status);
         """);
+
+        EnsureColumn(con, "violations", "track_id", "INTEGER");
+        EnsureColumn(con, "violations", "person_box", "TEXT");
 
         SeedDefaults(con);
     }
@@ -100,4 +104,14 @@ public static class DbInitializer
         ON CONFLICT(key) DO NOTHING
         """, new { key, value });
     }
+
+    private static void EnsureColumn(System.Data.IDbConnection con, string table, string col, string type)
+    {
+        var cols = con.Query($"PRAGMA table_info({table});").ToList();
+        var exists = cols.Any(r => ((string)r.name).Equals(col, StringComparison.OrdinalIgnoreCase));
+        if (exists) return;
+
+        con.Execute($"ALTER TABLE {table} ADD COLUMN {col} {type};");
+    }
+
 }
