@@ -15,6 +15,7 @@ public sealed class RealtimePage : UserControl
     private enum ViewMode { Single, Grid }
 
     private readonly AppBootstrap _app;
+    private readonly Action<ViolationRecord> _onViolationCreated;
 
     // Offline identifiers (match OfflinePage camId/camName)
     private const string OfflineCameraId = "offline";
@@ -72,11 +73,13 @@ public sealed class RealtimePage : UserControl
         BuildUI();
 
         // live events from engine (✅ filter out Offline Import)
-        _app.Engine.OnViolationCreated += v => this.SafeInvoke(() =>
+        _onViolationCreated = v => this.SafeInvoke(() =>
         {
             if (!ShouldShowInLivePanel(v)) return;
             PushEventCard(v);
         });
+
+        _app.Engine.OnViolationCreated += _onViolationCreated;
     }
 
     private bool ShouldShowInLivePanel(ViolationRecord v)
@@ -326,6 +329,8 @@ public sealed class RealtimePage : UserControl
 
     private void SetMode(ViewMode mode)
     {
+        if (_mode == mode) return;
+
         _mode = mode;
 
         _singleHost.Visible = (mode == ViewMode.Single);
@@ -333,6 +338,32 @@ public sealed class RealtimePage : UserControl
 
         // show camera selector only on Single
         _cboCam.Visible = (mode == ViewMode.Single);
+
+        // ✅ IMPORTANT: tránh chạy detect 2 lần (Grid + Single)
+        if (mode == ViewMode.Single)
+        {
+            // grid bị ẩn nhưng vẫn chạy => Stop để không tạo log trùng
+            foreach (var v in _gridViews) v.Stop();
+
+            // ensure single view is running
+            if (_singleView != null)
+            {
+                _singleView.Start();
+                _singleView.SetDetecting(_detecting);
+            }
+        }
+        else
+        {
+            // grid mode: stop single
+            _singleView?.Stop();
+
+            // start grid again
+            foreach (var v in _gridViews)
+            {
+                v.Start();
+                v.SetDetecting(_detecting);
+            }
+        }
 
         // button highlight
         _btnSingle.FillColor = mode == ViewMode.Single ? AppColors.PrimaryBlue : Color.White;
@@ -342,8 +373,12 @@ public sealed class RealtimePage : UserControl
         _btnGrid.ForeColor = mode == ViewMode.Grid ? Color.White : AppColors.TitleText;
     }
 
+
     private void ShowSingle(CameraConfig cam)
     {
+        // ✅ đảm bảo grid không chạy song song khi đang ở Single mode
+        foreach (var v in _gridViews) v.Stop();
+
         // dispose old view
         foreach (Control c in _singleFrame.Controls) c.Dispose();
         _singleFrame.Controls.Clear();
@@ -485,6 +520,20 @@ public sealed class RealtimePage : UserControl
 
         BuildGridViews();
         if (list.Count > 0) ShowSingle(list[0]);
+    }
+
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            try { _app.Engine.OnViolationCreated -= _onViolationCreated; } catch { }
+
+            try { foreach (var v in _gridViews) v.Stop(); } catch { }
+            try { _singleView?.Stop(); } catch { }
+        }
+
+        base.Dispose(disposing);
     }
 
 }

@@ -157,6 +157,21 @@ public sealed class CameraViewControl : UserControl
     {
         Stop();
 
+        // ✅ Avoid long waits when camera is disabled or RTSP url is empty
+        if (!_cam.Enabled || string.IsNullOrWhiteSpace(_cam.RtspUrl))
+        {
+            _state.Status = CameraStatus.Offline;
+            if (IsHandleCreated)
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    UpdateStatusBadge();
+                    UpdateOverlayText();
+                }));
+            }
+            return;
+        }
+
         _source = new RtspFrameSource(_cam.Id, _cam.Name, _cam.RtspUrl, _app.Logs);
         _source.OnStatus += OnSourceStatus;
         _source.OnFrame += HandleFrame;
@@ -299,10 +314,8 @@ public sealed class CameraViewControl : UserControl
             {
                 await ProcessFrameAsync(pkt).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch
             {
-                // ✅ ĐỪNG nuốt exception: log ra để biết detection đang chết ở đâu
-                _app.Logs.Error($"ProcessFrameAsync failed (cam={_cam.Name}): {ex}");
                 try { bmp.Dispose(); } catch { }
             }
             finally
@@ -442,7 +455,7 @@ public sealed class CameraViewControl : UserControl
     {
         unchecked
         {
-            // ✅ tránh overflow: dùng uint hằng số lớn
+            // ✅ tránh CS0266: dùng uint hằng số lớn
             uint h = (uint)id * 2654435761u;
             int r = 80 + (int)(h & 0x7Fu);
             int g = 80 + (int)((h >> 7) & 0x7Fu);
