@@ -244,7 +244,7 @@ public sealed class RealtimePage : UserControl
         // ===== Right events panel =====
         var eventCard = ControlFactory.Card();
         eventCard.Dock = DockStyle.Fill;
-        _right.Padding = new Padding(10, 10, 20, 20);
+        _right.Padding = new Padding(10, 5, 20, 20);
         _right.Controls.Add(eventCard);
 
         // Header (no Location hacks -> aligned)
@@ -276,7 +276,7 @@ public sealed class RealtimePage : UserControl
         };
         _btnClearLive.Click += (_, _) => _events.Controls.Clear();
         header.Controls.Add(_btnClearLive, 1, 0);
-
+        _events.Padding = new Padding(0, 27, 0, 0);
         eventCard.Controls.Add(_events);
         ControlPerf.EnableDoubleBuffer(_events);
 
@@ -328,50 +328,50 @@ public sealed class RealtimePage : UserControl
     }
 
     private void SetMode(ViewMode mode)
+{
+    if (_mode == mode) return;
+
+    _mode = mode;
+
+    _singleHost.Visible = (mode == ViewMode.Single);
+    _grid.Visible = (mode == ViewMode.Grid);
+
+    // show camera selector only on Single
+    _cboCam.Visible = (mode == ViewMode.Single);
+
+    // ✅ IMPORTANT: tránh chạy detect 2 lần (Grid + Single)
+    if (mode == ViewMode.Single)
     {
-        if (_mode == mode) return;
+        // grid bị ẩn nhưng vẫn chạy => Stop để không tạo log trùng
+        foreach (var v in _gridViews) v.Stop();
 
-        _mode = mode;
-
-        _singleHost.Visible = (mode == ViewMode.Single);
-        _grid.Visible = (mode == ViewMode.Grid);
-
-        // show camera selector only on Single
-        _cboCam.Visible = (mode == ViewMode.Single);
-
-        // ✅ IMPORTANT: tránh chạy detect 2 lần (Grid + Single)
-        if (mode == ViewMode.Single)
+        // ensure single view is running
+        if (_singleView != null)
         {
-            // grid bị ẩn nhưng vẫn chạy => Stop để không tạo log trùng
-            foreach (var v in _gridViews) v.Stop();
-
-            // ensure single view is running
-            if (_singleView != null)
-            {
-                _singleView.Start();
-                _singleView.SetDetecting(_detecting);
-            }
+            _singleView.Start();
+            _singleView.SetDetecting(_detecting);
         }
-        else
-        {
-            // grid mode: stop single
-            _singleView?.Stop();
-
-            // start grid again
-            foreach (var v in _gridViews)
-            {
-                v.Start();
-                v.SetDetecting(_detecting);
-            }
-        }
-
-        // button highlight
-        _btnSingle.FillColor = mode == ViewMode.Single ? AppColors.PrimaryBlue : Color.White;
-        _btnSingle.ForeColor = mode == ViewMode.Single ? Color.White : AppColors.TitleText;
-
-        _btnGrid.FillColor = mode == ViewMode.Grid ? AppColors.PrimaryBlue : Color.White;
-        _btnGrid.ForeColor = mode == ViewMode.Grid ? Color.White : AppColors.TitleText;
     }
+    else
+    {
+        // grid mode: stop single
+        _singleView?.Stop();
+
+        // start grid again
+        foreach (var v in _gridViews)
+        {
+            v.Start();
+            v.SetDetecting(_detecting);
+        }
+    }
+
+    // button highlight
+    _btnSingle.FillColor = mode == ViewMode.Single ? AppColors.PrimaryBlue : Color.White;
+    _btnSingle.ForeColor = mode == ViewMode.Single ? Color.White : AppColors.TitleText;
+
+    _btnGrid.FillColor = mode == ViewMode.Grid ? AppColors.PrimaryBlue : Color.White;
+    _btnGrid.ForeColor = mode == ViewMode.Grid ? Color.White : AppColors.TitleText;
+}
 
 
     private void ShowSingle(CameraConfig cam)
@@ -452,7 +452,7 @@ public sealed class RealtimePage : UserControl
             FillColor = Color.FromArgb(255, 240, 240),
             Height = 90,
             Width = width,
-            Margin = new Padding(6),
+            Margin = new Padding(8),
             Padding = new Padding(12)
         };
 
@@ -523,17 +523,17 @@ public sealed class RealtimePage : UserControl
     }
 
 
-    protected override void Dispose(bool disposing)
+protected override void Dispose(bool disposing)
+{
+    if (disposing)
     {
-        if (disposing)
-        {
-            try { _app.Engine.OnViolationCreated -= _onViolationCreated; } catch { }
+        try { _app.Engine.OnViolationCreated -= _onViolationCreated; } catch { }
 
-            try { foreach (var v in _gridViews) v.Stop(); } catch { }
-            try { _singleView?.Stop(); } catch { }
-        }
-
-        base.Dispose(disposing);
+        try { foreach (var v in _gridViews) v.Stop(); } catch { }
+        try { _singleView?.Stop(); } catch { }
     }
+
+    base.Dispose(disposing);
+}
 
 }

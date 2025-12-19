@@ -79,7 +79,7 @@ public sealed class OfflinePage : UserControl
 
         _btnBrowse = new Guna2Button
         {
-            Text = "Chọn file",
+            Text = "Browser",
             BorderRadius = 10,
             Height = 36,
             Width = 110,
@@ -91,7 +91,7 @@ public sealed class OfflinePage : UserControl
 
         _btnRun = new Guna2Button
         {
-            Text = "Chạy",
+            Text = "Run",
             BorderRadius = 10,
             Height = 36,
             Width = 90,
@@ -120,7 +120,7 @@ public sealed class OfflinePage : UserControl
             AutoSize = true,
             ForeColor = AppColors.MutedText,
             Padding = new Padding(10, 8, 0, 0),
-            Text = "Chưa chọn file"
+            Text = "File has not been selected yet!"
         };
         bar.Controls.Add(_lblFile);
 
@@ -188,7 +188,7 @@ public sealed class OfflinePage : UserControl
         using var dlg = new OpenFileDialog
         {
             Filter = "Media (*.mp4;*.avi;*.mkv;*.jpg;*.png)|*.mp4;*.avi;*.mkv;*.jpg;*.png|All files (*.*)|*.*",
-            Title = "Chọn video hoặc ảnh"
+            Title = "Choose a video or photo"
         };
 
         if (dlg.ShowDialog() != DialogResult.OK) return;
@@ -203,7 +203,7 @@ public sealed class OfflinePage : UserControl
         if (_running) return;
         if (string.IsNullOrWhiteSpace(_selected) || !File.Exists(_selected))
         {
-            _lblStatus.Text = "Chưa chọn file hợp lệ.";
+            _lblStatus.Text = "Have not selected a valid file.";
             return;
         }
 
@@ -216,7 +216,7 @@ public sealed class OfflinePage : UserControl
         _progress.Visible = true;
         _progress.Value = 0;
 
-        _lblStatus.Text = "Đang chạy…";
+        _lblStatus.Text = "Running...";
 
         try
         {
@@ -272,19 +272,19 @@ public sealed class OfflinePage : UserControl
             }
             else
             {
-                _lblStatus.Text = "Chỉ hỗ trợ ảnh/video phổ biến.";
+                _lblStatus.Text = "only support popular photos/videos.";
             }
         }
         catch (Exception ex)
         {
-            _lblStatus.Text = "Lỗi: " + ex.Message;
+            _lblStatus.Text = "Error: " + ex.Message;
         }
         finally
         {
             _progress.Visible = false;
             ToggleUi(true);
             _running = false;
-            _lblStatus.Text = "Xong.";
+            _lblStatus.Text = "Done.";
         }
     }
 
