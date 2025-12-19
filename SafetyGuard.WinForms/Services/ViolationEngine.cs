@@ -16,6 +16,37 @@ public sealed class ViolationEngine
 
     public event Action<ViolationRecord>? OnViolationCreated;
 
+    // ==========================================================
+    // Anti-spam cooldown (chống "đổi TrackId"):
+    // - Log theo vòng đời TrackId (PersonState.*EpisodeLogged)
+    // - Nhưng tracker có thể mất track rồi tạo TrackId mới cho cùng 1 người
+    //   => cooldown sẽ suppress log trùng trong khoảng CooldownSeconds,
+    //      dựa trên bbox similarity (IoU/center-distance).
+    // ==========================================================
+    private readonly object _recentLock = new();
+    private readonly Dictionary<(string camId, ViolationType type), List<_RecentEvent>> _recent = new();
+
+    private sealed class _RecentEvent
+    {
+        public DateTime TimeUtc;
+        public BoundingBox Box = new();
+        public int TrackId;
+    }
+
+    // ==========================================================
+    // MinConsecutiveFrames: đếm số frame liên tiếp "đang vi phạm"
+    // (không cần sửa PersonState, lưu trong engine theo (cameraId, trackId)).
+    // ==========================================================
+    private readonly object _frameLock = new();
+    private readonly Dictionary<(string camId, int trackId), _FrameCounters> _frames = new();
+
+    private sealed class _FrameCounters
+    {
+        public int NoHelmet;
+        public int NoVest;
+        public int NoGloves;
+        public int Smoking;
+    }
 
     // ===== Session state for ProcessDetections (Offline/Image) =====
     // Mục tiêu: KHÔNG spam theo frame, và nếu là video offline thì vẫn có TrackId theo vòng đời người.
@@ -35,6 +66,8 @@ public sealed class ViolationEngine
     {
         if (string.IsNullOrWhiteSpace(cameraId)) return;
         _sessions.Remove(cameraId);
+
+        ClearCameraCaches(cameraId);
     }
 
     public ViolationEngine(IAppSettingsService settings, IViolationRepository repo, EvidenceService evidence, LogService logs)
@@ -57,6 +90,11 @@ public sealed class ViolationEngine
         var now = DateTime.UtcNow;
         var s = _settings.Current;
 
+        var minFrames = Math.Max(1, s.MinConsecutiveFrames);
+        var cooldownSec = Math.Max(0, s.CooldownSeconds);
+
+        CleanupDeadTrackCaches(cameraId, tracks);
+
         var rules = s.Rules
             .Where(r => r.Enabled)
             .ToDictionary(r => r.Type, r => r);
@@ -66,23 +104,34 @@ public sealed class ViolationEngine
             if (!states.TryGetValue(t.TrackId, out var st))
                 continue;
 
+            // ---- MinConsecutiveFrames counters (per track) ----
+            var fc = GetFrameCounters(cameraId, t.TrackId);
+            fc.NoHelmet = st.HasHelmet ? 0 : (fc.NoHelmet + 1);
+            fc.NoVest = st.HasVest ? 0 : (fc.NoVest + 1);
+            fc.NoGloves = st.HasGloves ? 0 : (fc.NoGloves + 1);
+            fc.Smoking = st.HasSmoke ? (fc.Smoking + 1) : 0;
+
             var dt = dtOverride ?? (now - st.LastUpdateUtc).TotalSeconds;
             if (dt < 0 || dt > 1.0) dt = 1.0 / 15.0;
             st.LastUpdateUtc = now;
 
+            // Lưu ý: theo pipeline mới, EpisodeLogged là "đã log trong vòng đời track" (không reset khi PPE trở lại bình thường)
             (st.NoHelmetSeconds, st.NoHelmetEpisodeLogged) = UpdateEpisode(st.NoHelmetSeconds, st.NoHelmetEpisodeLogged, hasItem: st.HasHelmet, dt);
             (st.NoVestSeconds, st.NoVestEpisodeLogged) = UpdateEpisode(st.NoVestSeconds, st.NoVestEpisodeLogged, hasItem: st.HasVest, dt);
             (st.NoGlovesSeconds, st.NoGlovesEpisodeLogged) = UpdateEpisode(st.NoGlovesSeconds, st.NoGlovesEpisodeLogged, hasItem: st.HasGloves, dt);
             (st.SmokingSeconds, st.SmokingEpisodeLogged) = UpdateEpisode(st.SmokingSeconds, st.SmokingEpisodeLogged, hasItem: !st.HasSmoke, dt);
 
-            st.NoHelmetEpisodeLogged = TryCreateViolation(ViolationType.NoHelmet, s.NoHelmetSeconds, st.NoHelmetSeconds, st.NoHelmetEpisodeLogged);
-            st.NoVestEpisodeLogged = TryCreateViolation(ViolationType.NoVest, s.NoVestSeconds, st.NoVestSeconds, st.NoVestEpisodeLogged);
-            st.NoGlovesEpisodeLogged = TryCreateViolation(ViolationType.NoGloves, s.NoGlovesSeconds, st.NoGlovesSeconds, st.NoGlovesEpisodeLogged);
-            st.SmokingEpisodeLogged = TryCreateSmoking(s.SmokingSeconds, st.SmokingSeconds, st.SmokingEpisodeLogged);
+            st.NoHelmetEpisodeLogged = TryCreateViolation(ViolationType.NoHelmet, s.NoHelmetSeconds, st.NoHelmetSeconds, st.NoHelmetEpisodeLogged, fc.NoHelmet);
+            st.NoVestEpisodeLogged = TryCreateViolation(ViolationType.NoVest, s.NoVestSeconds, st.NoVestSeconds, st.NoVestEpisodeLogged, fc.NoVest);
+            st.NoGlovesEpisodeLogged = TryCreateViolation(ViolationType.NoGloves, s.NoGlovesSeconds, st.NoGlovesSeconds, st.NoGlovesEpisodeLogged, fc.NoGloves);
+            st.SmokingEpisodeLogged = TryCreateSmoking(s.SmokingSeconds, st.SmokingSeconds, st.SmokingEpisodeLogged, fc.Smoking);
 
-            bool TryCreateViolation(ViolationType type, double thresholdSec, double curSec, bool episodeLogged)
+            bool TryCreateViolation(ViolationType type, double thresholdSec, double curSec, bool episodeLogged, int consecFrames)
             {
                 if (!rules.TryGetValue(type, out var rule))
+                    return episodeLogged;
+
+                if (consecFrames < minFrames)
                     return episodeLogged;
 
                 if (forceCreate && !episodeLogged && curSec > 0)
@@ -100,9 +149,12 @@ public sealed class ViolationEngine
                 return episodeLogged;
             }
 
-            bool TryCreateSmoking(double thresholdSec, double curSec, bool episodeLogged)
+            bool TryCreateSmoking(double thresholdSec, double curSec, bool episodeLogged, int consecFrames)
             {
                 if (!rules.TryGetValue(ViolationType.Smoking, out var rule))
+                    return episodeLogged;
+
+                if (consecFrames < minFrames)
                     return episodeLogged;
 
                 if (forceCreate && !episodeLogged && st.HasSmoke)
@@ -122,6 +174,13 @@ public sealed class ViolationEngine
 
             void Create(ViolationType type, DetectionRule rule, float confidence)
             {
+                // ✅ Cooldown chống đổi TrackId (dùng setting "Anti-spam cooldown")
+                if (!forceCreate && cooldownSec > 0 &&
+                    ShouldSuppressDuplicate(cameraId, type, t.Box, t.TrackId, now, cooldownSec))
+                {
+                    return;
+                }
+
                 var v = new ViolationRecord
                 {
                     TimeUtc = now,
@@ -149,6 +208,7 @@ public sealed class ViolationEngine
 
     private static (double sec, bool logged) UpdateEpisode(double durationSec, bool episodeLogged, bool hasItem, double dt)
     {
+        // Theo pipeline vòng đời người: nếu đã log 1 lần cho TrackId này, giữ nguyên episodeLogged = true
         if (hasItem)
             return (0, episodeLogged);
 
@@ -156,8 +216,6 @@ public sealed class ViolationEngine
     }
 
     // ===== Compatibility: OfflineAnalyzer vẫn gọi ProcessDetections =====
-    private readonly Dictionary<(string cam, ViolationType type), DateTime> _offlineCooldown = new();
-
     public void ProcessDetections(
         string cameraId,
         string cameraName,
@@ -175,6 +233,8 @@ public sealed class ViolationEngine
         {
             session = new _Session();
             _sessions[cameraId] = session;
+
+            ClearCameraCaches(cameraId);
         }
 
         // Nếu idle lâu (thường là người dùng chạy offline lần mới), reset session để TrackId không dính từ lần trước.
@@ -182,6 +242,8 @@ public sealed class ViolationEngine
         {
             session = new _Session();
             _sessions[cameraId] = session;
+
+            ClearCameraCaches(cameraId);
         }
 
         session.LastSeenUtc = now;
@@ -220,5 +282,161 @@ public sealed class ViolationEngine
             session.States,
             forceCreate: forceCreate,
             dtOverride: null); // offline loop chạy nhanh -> dùng forceCreate nếu muốn log ngay
+    }
+
+    private _FrameCounters GetFrameCounters(string cameraId, int trackId)
+    {
+        cameraId ??= "";
+        var key = (camId: cameraId, trackId);
+
+        lock (_frameLock)
+        {
+            if (!_frames.TryGetValue(key, out var fc))
+            {
+                fc = new _FrameCounters();
+                _frames[key] = fc;
+            }
+
+            return fc;
+        }
+    }
+
+    private void CleanupDeadTrackCaches(string cameraId, IReadOnlyList<SortTracker.Track> tracks)
+    {
+        cameraId ??= "";
+        var alive = tracks.Select(t => t.TrackId).ToHashSet();
+
+        lock (_frameLock)
+        {
+            var keysToRemove = _frames.Keys
+                .Where(k => string.Equals(k.camId, cameraId, StringComparison.OrdinalIgnoreCase) && !alive.Contains(k.trackId))
+                .ToList();
+
+            foreach (var k in keysToRemove)
+                _frames.Remove(k);
+        }
+    }
+
+    private void ClearCameraCaches(string cameraId)
+    {
+        cameraId ??= "";
+
+        lock (_frameLock)
+        {
+            var removeKeys = _frames.Keys
+                .Where(k => string.Equals(k.camId, cameraId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var k in removeKeys)
+                _frames.Remove(k);
+        }
+
+        lock (_recentLock)
+        {
+            var removeKeys = _recent.Keys
+                .Where(k => string.Equals(k.camId, cameraId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var k in removeKeys)
+                _recent.Remove(k);
+        }
+    }
+
+    private bool ShouldSuppressDuplicate(
+        string cameraId,
+        ViolationType type,
+        BoundingBox box,
+        int trackId,
+        DateTime nowUtc,
+        int cooldownSeconds)
+    {
+        if (cooldownSeconds <= 0) return false;
+
+        cameraId ??= "";
+        var key = (camId: cameraId, type);
+        var cutoff = nowUtc.AddSeconds(-cooldownSeconds);
+
+        lock (_recentLock)
+        {
+            if (!_recent.TryGetValue(key, out var list))
+            {
+                list = new List<_RecentEvent>(8);
+                _recent[key] = list;
+            }
+
+            // drop old
+            for (int i = list.Count - 1; i >= 0; i--)
+                if (list[i].TimeUtc < cutoff) list.RemoveAt(i);
+
+            // match any recent event that "looks like same person"
+            foreach (var e in list)
+            {
+                // per-track đã chặn rồi; cooldown chủ yếu để chặn đổi TrackId
+                if (e.TrackId == trackId)
+                    continue;
+
+                if (IsSamePersonBox(e.Box, box))
+                    return true;
+            }
+
+            // record
+            list.Add(new _RecentEvent { TimeUtc = nowUtc, Box = box, TrackId = trackId });
+            if (list.Count > 24) list.RemoveRange(0, list.Count - 24);
+        }
+
+        return false;
+    }
+
+    private static bool IsSamePersonBox(BoundingBox a, BoundingBox b)
+    {
+        // 2 tiêu chí: IoU đủ cao hoặc tâm gần nhau + kích thước tương tự
+        var iou = IoU(a, b);
+        if (iou >= 0.30f) return true;
+
+        var acx = a.X + a.W / 2f;
+        var acy = a.Y + a.H / 2f;
+        var bcx = b.X + b.W / 2f;
+        var bcy = b.Y + b.H / 2f;
+
+        var dx = acx - bcx;
+        var dy = acy - bcy;
+        var dist = MathF.Sqrt(dx * dx + dy * dy);
+
+        var diag = MathF.Sqrt(MathF.Max(a.W, b.W) * MathF.Max(a.W, b.W) + MathF.Max(a.H, b.H) * MathF.Max(a.H, b.H));
+        if (diag <= 1e-3f) return false;
+
+        var distNorm = dist / diag;
+
+        var areaA = MathF.Max(1f, a.W * a.H);
+        var areaB = MathF.Max(1f, b.W * b.H);
+        var ratio = areaA > areaB ? areaA / areaB : areaB / areaA;
+
+        return distNorm <= 0.25f && ratio <= 2.0f;
+    }
+
+    private static float IoU(BoundingBox a, BoundingBox b)
+    {
+        var ax1 = a.X;
+        var ay1 = a.Y;
+        var ax2 = a.X + a.W;
+        var ay2 = a.Y + a.H;
+
+        var bx1 = b.X;
+        var by1 = b.Y;
+        var bx2 = b.X + b.W;
+        var by2 = b.Y + b.H;
+
+        var x1 = MathF.Max(ax1, bx1);
+        var y1 = MathF.Max(ay1, by1);
+        var x2 = MathF.Min(ax2, bx2);
+        var y2 = MathF.Min(ay2, by2);
+
+        var inter = MathF.Max(0, x2 - x1) * MathF.Max(0, y2 - y1);
+        if (inter <= 0) return 0;
+
+        var areaA = MathF.Max(1f, a.W * a.H);
+        var areaB = MathF.Max(1f, b.W * b.H);
+
+        return inter / (areaA + areaB - inter);
     }
 }
