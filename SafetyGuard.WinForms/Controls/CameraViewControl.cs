@@ -428,7 +428,7 @@ public sealed class CameraViewControl : UserControl
 
             string ppe = st == null
                 ? "?"
-                : $"H:{(st.HasHelmet ? 1 : 0)} V:{(st.HasVest ? 1 : 0)} G:{(st.HasGloves ? 1 : 0)} S:{(st.HasSmoke ? 1 : 0)}";
+                : $"H:{(st.HasHelmet ? 1 : 0)} V:{(st.HasVest ? 1 : 0)} G:{(st.HasGloves ? 1 : 0)} GL:{(st.HasGlasses ? 1 : 0)} B:{(st.HasBoots ? 1 : 0)} S:{(st.HasSmoke ? 1 : 0)}";
 
             var text = $"ID:{t.TrackId}  {ppe}";
             var size = g.MeasureString(text, font);
@@ -439,7 +439,7 @@ public sealed class CameraViewControl : UserControl
                 size.Width + 8,
                 size.Height + 4);
 
-            var bgColor = (st != null && (!st.HasHelmet || !st.HasVest || !st.HasGloves || st.HasSmoke))
+            var bgColor = (st != null && (!st.HasHelmet || !st.HasVest || !st.HasGloves || !st.HasGlasses || !st.HasBoots || st.HasSmoke))
                 ? Color.FromArgb(180, 180, 40, 40)
                 : Color.FromArgb(160, 0, 0, 0);
 

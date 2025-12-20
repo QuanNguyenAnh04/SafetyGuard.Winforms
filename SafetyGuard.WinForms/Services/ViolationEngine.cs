@@ -45,8 +45,19 @@ public sealed class ViolationEngine
         public int NoHelmet;
         public int NoVest;
         public int NoGloves;
+        public int NoGlasses;
+        public int NoBoots;
         public int Smoking;
+
+        // "good" streaks: dùng để reset episodeLogged khi đã trở lại bình thường đủ ổn định
+        public int OkHelmet;
+        public int OkVest;
+        public int OkGloves;
+        public int OkGlasses;
+        public int OkBoots;
+        public int OkNoSmoke;
     }
+
 
     // ===== Session state for ProcessDetections (Offline/Image) =====
     // Mục tiêu: KHÔNG spam theo frame, và nếu là video offline thì vẫn có TrackId theo vòng đời người.
@@ -109,21 +120,40 @@ public sealed class ViolationEngine
             fc.NoHelmet = st.HasHelmet ? 0 : (fc.NoHelmet + 1);
             fc.NoVest = st.HasVest ? 0 : (fc.NoVest + 1);
             fc.NoGloves = st.HasGloves ? 0 : (fc.NoGloves + 1);
+            fc.NoGlasses = st.HasGlasses ? 0 : (fc.NoGlasses + 1);
+            fc.NoBoots = st.HasBoots ? 0 : (fc.NoBoots + 1);
             fc.Smoking = st.HasSmoke ? (fc.Smoking + 1) : 0;
+
+            fc.OkHelmet = st.HasHelmet ? (fc.OkHelmet + 1) : 0;
+            fc.OkVest = st.HasVest ? (fc.OkVest + 1) : 0;
+            fc.OkGloves = st.HasGloves ? (fc.OkGloves + 1) : 0;
+            fc.OkGlasses = st.HasGlasses ? (fc.OkGlasses + 1) : 0;
+            fc.OkBoots = st.HasBoots ? (fc.OkBoots + 1) : 0;
+            fc.OkNoSmoke = !st.HasSmoke ? (fc.OkNoSmoke + 1) : 0;
+
 
             var dt = dtOverride ?? (now - st.LastUpdateUtc).TotalSeconds;
             if (dt < 0 || dt > 1.0) dt = 1.0 / 15.0;
             st.LastUpdateUtc = now;
 
             // Lưu ý: theo pipeline mới, EpisodeLogged là "đã log trong vòng đời track" (không reset khi PPE trở lại bình thường)
-            (st.NoHelmetSeconds, st.NoHelmetEpisodeLogged) = UpdateEpisode(st.NoHelmetSeconds, st.NoHelmetEpisodeLogged, hasItem: st.HasHelmet, dt);
-            (st.NoVestSeconds, st.NoVestEpisodeLogged) = UpdateEpisode(st.NoVestSeconds, st.NoVestEpisodeLogged, hasItem: st.HasVest, dt);
-            (st.NoGlovesSeconds, st.NoGlovesEpisodeLogged) = UpdateEpisode(st.NoGlovesSeconds, st.NoGlovesEpisodeLogged, hasItem: st.HasGloves, dt);
-            (st.SmokingSeconds, st.SmokingEpisodeLogged) = UpdateEpisode(st.SmokingSeconds, st.SmokingEpisodeLogged, hasItem: !st.HasSmoke, dt);
+            (st.NoHelmetSeconds, st.NoHelmetEpisodeLogged) = UpdateEpisode(st.NoHelmetSeconds, st.NoHelmetEpisodeLogged, hasItem: st.HasHelmet, dt, okConsecFrames: fc.OkHelmet, resetFrames: minFrames);
+
+            (st.NoVestSeconds, st.NoVestEpisodeLogged) = UpdateEpisode(st.NoVestSeconds, st.NoVestEpisodeLogged, hasItem: st.HasVest, dt, okConsecFrames: fc.OkVest, resetFrames: minFrames);
+
+            (st.NoGlovesSeconds, st.NoGlovesEpisodeLogged) = UpdateEpisode(st.NoGlovesSeconds, st.NoGlovesEpisodeLogged, hasItem: st.HasGloves, dt, okConsecFrames: fc.OkGloves, resetFrames: minFrames);
+
+            (st.NoGlassesSeconds, st.NoGlassesEpisodeLogged) = UpdateEpisode(st.NoGlassesSeconds, st.NoGlassesEpisodeLogged, hasItem: st.HasGlasses, dt, okConsecFrames: fc.OkGlasses, resetFrames: minFrames);
+
+            (st.NoBootsSeconds, st.NoBootsEpisodeLogged) = UpdateEpisode(st.NoBootsSeconds, st.NoBootsEpisodeLogged, hasItem: st.HasBoots, dt, okConsecFrames: fc.OkBoots, resetFrames: minFrames);
+
+            (st.SmokingSeconds, st.SmokingEpisodeLogged) = UpdateEpisode(st.SmokingSeconds, st.SmokingEpisodeLogged, hasItem: !st.HasSmoke, dt,okConsecFrames: fc.OkNoSmoke, resetFrames: minFrames);
 
             st.NoHelmetEpisodeLogged = TryCreateViolation(ViolationType.NoHelmet, s.NoHelmetSeconds, st.NoHelmetSeconds, st.NoHelmetEpisodeLogged, fc.NoHelmet);
             st.NoVestEpisodeLogged = TryCreateViolation(ViolationType.NoVest, s.NoVestSeconds, st.NoVestSeconds, st.NoVestEpisodeLogged, fc.NoVest);
             st.NoGlovesEpisodeLogged = TryCreateViolation(ViolationType.NoGloves, s.NoGlovesSeconds, st.NoGlovesSeconds, st.NoGlovesEpisodeLogged, fc.NoGloves);
+            st.NoGlassesEpisodeLogged = TryCreateViolation(ViolationType.NoGlasses, s.NoGlassesSeconds, st.NoGlassesSeconds, st.NoGlassesEpisodeLogged, fc.NoGlasses);
+            st.NoBootsEpisodeLogged = TryCreateViolation(ViolationType.NoBoots, s.NoBootsSeconds, st.NoBootsSeconds, st.NoBootsEpisodeLogged, fc.NoBoots);
             st.SmokingEpisodeLogged = TryCreateSmoking(s.SmokingSeconds, st.SmokingSeconds, st.SmokingEpisodeLogged, fc.Smoking);
 
             bool TryCreateViolation(ViolationType type, double thresholdSec, double curSec, bool episodeLogged, int consecFrames)
@@ -206,14 +236,20 @@ public sealed class ViolationEngine
         }
     }
 
-    private static (double sec, bool logged) UpdateEpisode(double durationSec, bool episodeLogged, bool hasItem, double dt)
+    private static (double sec, bool logged) UpdateEpisode(double durationSec, bool episodeLogged, bool hasItem, double dt, int okConsecFrames, int resetFrames)
     {
-        // Theo pipeline vòng đời người: nếu đã log 1 lần cho TrackId này, giữ nguyên episodeLogged = true
+        // hasItem=true => đang bình thường => reset thời gian vi phạm.
+        // Nếu bình thường đủ lâu => reset episodeLogged=false để vi phạm lần sau vẫn log được.
         if (hasItem)
-            return (0, episodeLogged);
+        {
+            if (resetFrames < 1) resetFrames = 1;
+            var allowNewEpisode = okConsecFrames >= resetFrames;
+            return (0, allowNewEpisode ? false : episodeLogged);
+        }
 
         return (durationSec + dt, episodeLogged);
     }
+
 
     // ===== Compatibility: OfflineAnalyzer vẫn gọi ProcessDetections =====
     public void ProcessDetections(
@@ -371,13 +407,15 @@ public sealed class ViolationEngine
             // match any recent event that "looks like same person"
             foreach (var e in list)
             {
-                // per-track đã chặn rồi; cooldown chủ yếu để chặn đổi TrackId
+                // Sau khi bật "episode reset" thì 1 TrackId có thể log nhiều lần.
+                // => Cooldown cần chặn cả trường hợp cùng TrackId, và cả đổi TrackId.
                 if (e.TrackId == trackId)
-                    continue;
+                    return true;
 
                 if (IsSamePersonBox(e.Box, box))
                     return true;
             }
+
 
             // record
             list.Add(new _RecentEvent { TimeUtc = nowUtc, Box = box, TrackId = trackId });

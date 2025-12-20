@@ -23,6 +23,8 @@ public sealed class AppSettings
     public double NoHelmetSeconds { get; set; } = 2.0;        // NoHelmet > 2s
     public double NoVestSeconds { get; set; } = 3.0;          // NoVest > 3s
     public double NoGlovesSeconds { get; set; } = 3.0;        // gợi ý
+    public double NoGlassesSeconds { get; set; } = 3.0;      // gợi ý
+    public double NoBootsSeconds { get; set; } = 3.0;        // gợi ý
     public double SmokingSeconds { get; set; } = 1.0;         // gợi ý
 
     // Evidence

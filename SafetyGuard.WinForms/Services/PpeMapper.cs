@@ -20,6 +20,8 @@ public sealed class PpeMapper
         var helmets = detections.Where(d => d.Class == ObjectClass.Helmet && d.Confidence >= minConf).ToList();
         var vests = detections.Where(d => d.Class == ObjectClass.Vest && d.Confidence >= minConf).ToList();
         var gloves = detections.Where(d => d.Class == ObjectClass.Gloves && d.Confidence >= minConf).ToList();
+        var glasses = detections.Where(d => d.Class == ObjectClass.Glasses && d.Confidence >= minConf).ToList();
+        var boots = detections.Where(d => d.Class == ObjectClass.Boots && d.Confidence >= minConf).ToList();
         var smokes = detections.Where(d => d.Class == ObjectClass.Smoking && d.Confidence >= minConf).ToList();
 
         foreach (var t in tracks)
@@ -33,6 +35,8 @@ public sealed class PpeMapper
             (st.HasHelmet, st.HelmetConfidence) = PickBestAssigned(helmets, t.Box, ppeIouThreshold);
             (st.HasVest, st.VestConfidence) = PickBestAssigned(vests, t.Box, ppeIouThreshold);
             (st.HasGloves, st.GlovesConfidence) = PickBestAssigned(gloves, t.Box, ppeIouThreshold);
+            (st.HasGlasses, st.GlassesConfidence) = PickBestAssigned(glasses, t.Box, ppeIouThreshold);
+            (st.HasBoots, st.BootsConfidence) = PickBestAssigned(boots, t.Box, ppeIouThreshold);
             (st.HasSmoke, st.SmokeConfidence) = PickBestAssigned(smokes, t.Box, ppeIouThreshold);
         }
     }
