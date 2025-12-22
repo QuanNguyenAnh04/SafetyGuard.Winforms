@@ -259,20 +259,6 @@ public partial class MainForm : Form
         };
         pnlTopbar.Controls.Add(right);
 
-        /*
-        var bell = new Guna2CircleButton
-        {
-            Size = new Size(36, 36),
-            FillColor = AppColors.ContentBg,
-            Text = "🔔",
-            Font = new Font("Segoe UI", 11),
-            Cursor = Cursors.Hand,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            Location = new Point(10, 14)
-        };
-        right.Controls.Add(bell);
-        */
-
         lblDate = new Label
         {
             Text = DateTime.Now.ToString("MMM dd, yyyy"),

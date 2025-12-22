@@ -107,8 +107,8 @@ public sealed class OfflinePage : UserControl
             BorderRadius = 10,
             Height = 36,
             Width = 120,
-            FillColor = AppColors.ContentBg,     // thay CardBorder
-            ForeColor = AppColors.MutedText,     // thay TextPrimary
+            FillColor = AppColors.ContentBg,
+            ForeColor = AppColors.MutedText,
             BorderThickness = 1,
             BorderColor = Color.FromArgb(210, 220, 235)
         };
@@ -234,10 +234,7 @@ public sealed class OfflinePage : UserControl
                         cameraName: OfflineCameraName,
                         onFrame: (frame, dets) =>
                         {
-                            BeginInvoke((Action)(() =>
-                            {
-                                UpdatePreview(frame, dets);
-                            }));
+                            BeginInvoke((Action)(() => { UpdatePreview(frame, dets); }));
                         },
                         forceCreate: true);
                 });
@@ -250,7 +247,9 @@ public sealed class OfflinePage : UserControl
                         _selected!,
                         cameraId: OfflineCameraId,
                         cameraName: OfflineCameraName,
-                        sampleEveryNFrames: 10,
+                        // NOTE: Nếu muốn chạy nhanh hơn (bỏ bớt frame), tăng lên 2,3,5...
+                        // Để xem video mượt (playback/preview), để 1.
+                        sampleEveryNFrames: 4,
                         progress: (i, total) =>
                         {
                             BeginInvoke((Action)(() =>
@@ -262,10 +261,7 @@ public sealed class OfflinePage : UserControl
                         },
                         onFrame: (frame, dets) =>
                         {
-                            BeginInvoke((Action)(() =>
-                            {
-                                UpdatePreview(frame, dets);
-                            }));
+                            BeginInvoke((Action)(() => { UpdatePreview(frame, dets); }));
                         },
                         forceCreate: true);
                 });
@@ -278,6 +274,7 @@ public sealed class OfflinePage : UserControl
         catch (Exception ex)
         {
             _lblStatus.Text = "Error: " + ex.Message;
+            _app.Logs.Error("[OFFLINE][UI] " + ex);
         }
         finally
         {
@@ -297,30 +294,43 @@ public sealed class OfflinePage : UserControl
 
     private void UpdatePreview(Bitmap frame, DetectionResult[] dets)
     {
-        // vẽ overlay đơn giản
-        var bmp = (Bitmap)frame.Clone();
-        using var g = Graphics.FromImage(bmp);
-        g.DrawString($"dets={dets.Length}", new Font("Segoe UI", 12, FontStyle.Bold), Brushes.Yellow, 10, 10);
+        // IMPORTANT:
+        // - 'frame' đã là clone từ analyzer -> vẽ trực tiếp lên frame.
+        // - Tránh Clone lần 2 (giảm GC/lag khi chạy offline).
 
-        using var font = new Font("Segoe UI", 10, FontStyle.Bold);
-
-        foreach (var d in dets.OrderByDescending(x => x.Confidence).Take(30))
+        try
         {
-            var rect = d.Box.ToRectClamped(bmp.Width, bmp.Height);
-            var color = ColorFor(d.Class);
-            using var pen = new Pen(color, 2);
-            g.DrawRectangle(pen, rect);
+            using var g = Graphics.FromImage(frame);
+            using var headerFont = new Font("Segoe UI", 12, FontStyle.Bold);
+            using var font = new Font("Segoe UI", 10, FontStyle.Bold);
+            using var bgBrush = new SolidBrush(Color.FromArgb(160, 0, 0, 0));
 
-            var label = $"{d.Class} {(d.Confidence * 100):0}%";
-            var size = g.MeasureString(label, font);
-            g.FillRectangle(new SolidBrush(Color.FromArgb(160, 0, 0, 0)), rect.X, Math.Max(0, rect.Y - size.Height), size.Width + 8, size.Height + 2);
-            g.DrawString(label, font, Brushes.White, rect.X + 4, Math.Max(0, rect.Y - size.Height));
+            g.DrawString($"dets={dets.Length}", headerFont, Brushes.Yellow, 10, 10);
+
+            foreach (var d in dets.OrderByDescending(x => x.Confidence).Take(30))
+            {
+                var rect = d.Box.ToRectClamped(frame.Width, frame.Height);
+                if (rect.Width < 1 || rect.Height < 1) continue;
+
+                var color = ColorFor(d.Class);
+                using var pen = new Pen(color, 2);
+                g.DrawRectangle(pen, rect);
+
+                var label = $"{d.Class} {(d.Confidence * 100):0}%";
+                var size = g.MeasureString(label, font);
+                g.FillRectangle(bgBrush, rect.X, Math.Max(0, rect.Y - size.Height), size.Width + 8, size.Height + 2);
+                g.DrawString(label, font, Brushes.White, rect.X + 4, Math.Max(0, rect.Y - size.Height));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Nếu overlay lỗi, vẫn show frame gốc (tránh "Running nhưng màn đen")
+            _app.Logs.Warn("[OFFLINE][UI] Preview overlay error: " + ex.Message);
         }
 
         var old = _preview.Image;
-        _preview.Image = bmp;
+        _preview.Image = frame;
         old?.Dispose();
-        frame.Dispose();
     }
 
     private void AddViolationEvent(ViolationRecord v)
